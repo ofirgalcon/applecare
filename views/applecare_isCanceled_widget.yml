@@ -1,8 +1,13 @@
-type: scrollbox
-widget_id: applecare-isCanceled-scrollbox-widget
-api_url: /module/applecare/get_list/isCanceled
+type: button
+widget_id: applecare-isCanceled-widget
+api_url: /module/applecare/get_binary_widget/isCanceled
 i18n_title: applecare.widget.isCanceled_title
-icon: fa-laptop
+icon: fa-ban
 listing_link: /show/listing/applecare/applecare
-search_key: label
-badge: count
+buttons:
+  - label: 1
+    i18n_label: yes
+    class: btn-danger 
+  - label: 0
+    i18n_label: no
+    class: btn-success

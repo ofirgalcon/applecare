@@ -1,90 +1,39 @@
-<?php
-/**
- * AppleCare Widget
- * 
- * Dashboard widget showing AppleCare coverage statistics
- * Loads data via AJAX from the controller
- */
-?>
-
 <div class="col-lg-4 col-md-6">
     <div class="panel panel-default" id="applecare-widget">
         <div class="panel-heading" data-container="body">
-            <h3 class="panel-title">
-                <i class="fa fa-shield"></i>
-                <span data-i18n="applecare.widget_title">AppleCare Coverage</span>
-                <a href="<?= url('show/listing/applecare/applecare') ?>" class="pull-right">
-                    <i class="fa fa-list"></i>
-                </a>
+            <h3 class="panel-title"><i class="fa fa-shield"></i>
+                <span data-i18n="applecare.widget_title"></span>
+				<span class="applecare_counter badge"></span>
+                <list-link data-url="/show/listing/applecare/applecare"></list-link>
             </h3>
         </div>
-        <div class="panel-body">
-            <table class="table table-condensed">
-                <tbody>
-                    <tr>
-                        <td>
-                            <span data-i18n="applecare.total_devices">Total Devices</span>
-                        </td>
-                        <td class="text-right">
-                            <a href="<?= url('show/listing/applecare/applecare') ?>">
-                                <span class="badge" id="applecare-total-devices">0</span>
-                            </a>
-                        </td>
-                    </tr>
-                    <tr class="success">
-                        <td>
-                            <span data-i18n="applecare.active">Active Coverage</span>
-                        </td>
-                        <td class="text-right">
-                            <a href="<?= url('show/listing/applecare/applecare?status=ACTIVE') ?>">
-                                <span class="badge" id="applecare-active">0</span>
-                            </a>
-                        </td>
-                    </tr>
-                    <tr class="warning">
-                        <td>
-                            <span data-i18n="applecare.expiring_soon">Expiring Soon (30 days)</span>
-                        </td>
-                        <td class="text-right">
-                            <a href="<?= url('show/listing/applecare/applecare?expiring=1') ?>">
-                                <span class="badge" id="applecare-expiring">0</span>
-                            </a>
-                        </td>
-                    </tr>
-                    <tr class="danger">
-                        <td>
-                            <span data-i18n="applecare.expired">Expired</span>
-                        </td>
-                        <td class="text-right">
-                            <a href="<?= url('show/listing/applecare/applecare?expired=1') ?>">
-                                <span class="badge" id="applecare-expired">0</span>
-                            </a>
-                        </td>
-                    </tr>
-                    <tr>
-                        <td>
-                            <span data-i18n="applecare.inactive">Inactive</span>
-                        </td>
-                        <td class="text-right">
-                            <a href="<?= url('show/listing/applecare/applecare?status=INACTIVE') ?>">
-                                <span class="badge" id="applecare-inactive">0</span>
-                            </a>
-                        </td>
-                    </tr>
-                </tbody>
-            </table>
-        </div>
-    </div>
-</div>
+        <div class="panel-body text-center"></div>
+    </div><!-- /panel -->
+</div><!-- /col -->
+
 
 <script>
-$(document).on('appReady', function() {
-    $.getJSON(appUrl + '/module/applecare/get_stats', function(data) {
-        $('#applecare-total-devices').text(data.total_devices || 0);
-        $('#applecare-active').text(data.active || 0);
-        $('#applecare-expiring').text(data.expiring_soon || 0);
-        $('#applecare-expired').text(data.expired || 0);
-        $('#applecare-inactive').text(data.inactive || 0);
+$(document).on('appUpdate', function(e, lang) {
+
+    $.getJSON( appUrl + '/module/applecare/get_stats', function( data ) {
+
+        if(data.error){
+            //alert(data.error);
+            return;
+        }
+
+        var panel = $('#applecare-widget div.panel-body'),
+            baseUrl = appUrl + '/show/listing/applecare/applecare#';
+        panel.empty();
+
+        $('#applecare-widget .applecare_counter').html(data.total_devices);
+
+        // Set statuses
+        panel.append(' <a href="'+baseUrl+'expired=1" class="btn btn-danger"><span class="bigger-150">'+data.expired+'</span><br>'+i18n.t('applecare.expired')+'</a>');
+        panel.append(' <a href="'+baseUrl+'expiring=1" class="btn btn-warning"><span class="bigger-150">'+data.expiring_soon+'</span><br>'+i18n.t('applecare.expiring_soon')+'</a>');
+        panel.append(' <a href="'+baseUrl+'status=ACTIVE" class="btn btn-success"><span class="bigger-150">'+data.active+'</span><br>'+i18n.t('applecare.active')+'</a>');
+        panel.append(' <a href="'+baseUrl+'status=INACTIVE" class="btn btn-info"><span class="bigger-150">'+data.inactive+'</span><br>'+i18n.t('applecare.inactive')+'</a>');
     });
 });
+
 </script>

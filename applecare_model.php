@@ -8,7 +8,6 @@ class Applecare_model extends Eloquent
     protected $table = 'applecare';
 
     protected $hidden = ['id', 'serial_number'];
-    
 
     protected $fillable = [
       'id',
@@ -156,7 +155,7 @@ class Applecare_model extends Eloquent
     public function getAttributes()
     {
         $attributes = parent::getAttributes();
-        
+
         // Format boolean fields (isRenewable, isCanceled) to True/False
         // This ensures listings show True/False even when accessing attributes directly
         $booleanFields = ['isRenewable', 'isCanceled'];
@@ -173,7 +172,7 @@ class Applecare_model extends Eloquent
                 }
             }
         }
-        
+
         // Format date fields to month-day-year format
         $dateFields = ['startDateTime', 'endDateTime', 'contractCancelDateTime', 'last_updated'];
         foreach ($dateFields as $field) {
@@ -185,7 +184,7 @@ class Applecare_model extends Eloquent
                 }
             }
         }
-        
+
         return $attributes;
     }
 
@@ -196,7 +195,7 @@ class Applecare_model extends Eloquent
     public function toArray()
     {
         $array = parent::toArray();
-        
+
         // Format date fields using raw attribute values
         // Accessors handle formatting, but toArray might bypass them, so format explicitly
         $dateFields = ['startDateTime', 'endDateTime', 'contractCancelDateTime', 'last_updated'];
@@ -209,7 +208,7 @@ class Applecare_model extends Eloquent
                 }
             }
         }
-        
+
         // Format boolean fields (isRenewable, isCanceled) to True/False
         $booleanFields = ['isRenewable', 'isCanceled'];
         foreach ($booleanFields as $field) {
@@ -231,7 +230,7 @@ class Applecare_model extends Eloquent
         if (empty($filter)) {
             $filter = $_GET ?? [];
         }
-        
+
         // Try to call parent filter first (MRModel may have its own filter logic)
         try {
             $parentClass = get_parent_class($this);
@@ -241,7 +240,7 @@ class Applecare_model extends Eloquent
         } catch (\Exception $e) {
             // Continue if parent filter doesn't exist or fails
         }
-        
+
         // Handle status filter from query parameter
         if (isset($filter['status'])) {
             $status = strtoupper(trim($filter['status']));
@@ -262,13 +261,13 @@ class Applecare_model extends Eloquent
                 $query->where('status', $status);
             }
         }
-        
+
         // Handle expired filter
         if (isset($filter['expired']) && ($filter['expired'] == '1' || $filter['expired'] === true)) {
             $query->whereNotNull('endDateTime')
                   ->where('endDateTime', '<', date('Y-m-d'));
         }
-        
+
         // Handle expiring filter (within 30 days)
         if (isset($filter['expiring']) && ($filter['expiring'] == '1' || $filter['expiring'] === true)) {
             $now = date('Y-m-d');
@@ -278,7 +277,7 @@ class Applecare_model extends Eloquent
                   ->where('endDateTime', '>=', $now)
                   ->where('endDateTime', '<=', $thirtyDays);
         }
-        
+
         return $query;
     }
 }

@@ -1,8 +1,9 @@
 type: scrollbox
-widget_id: applecare-description-scrollbox-widget
-api_url: /module/applecare/get_list/description
+widget_id: applecare-description-widget
+api_url: /module/applecare/get_binary_widget/description
 i18n_title: applecare.widget.description_title
-icon: fa-laptop
+icon: fa-sticky-note-o
 listing_link: /show/listing/applecare/applecare
 search_key: label
 badge: count
+i18n_empty_result: no_data

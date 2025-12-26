@@ -1,8 +1,9 @@
 type: scrollbox
-widget_id: applecare-paymentType-scrollbox-widget
-api_url: /module/applecare/get_list/paymentType
+widget_id: applecare-paymentType-widget
+api_url: /module/applecare/get_binary_widget/paymentType
 i18n_title: applecare.widget.paymentType_title
-icon: fa-laptop
+icon: fa-money
 listing_link: /show/listing/applecare/applecare
 search_key: label
 badge: count
+i18n_empty_result: no_data

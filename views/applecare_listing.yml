@@ -1,4 +1,5 @@
 i18n_title: applecare.listing.title
+js_link: module/applecare/js/applecare
 table:
     -   column: machine.computer_name
         i18n_header: listing.computername
@@ -12,14 +13,18 @@ table:
         i18n_header: applecare.column.description
     -   column: applecare.startDateTime
         i18n_header: applecare.column.startDateTime
+        formatter: format_applecare_DateToMoment
     -   column: applecare.endDateTime
         i18n_header: applecare.column.endDateTime
+        formatter: format_applecare_DateToMoment
     -   column: applecare.paymentType
         i18n_header: applecare.column.paymentType
     -   column: applecare.isRenewable
         i18n_header: applecare.column.isRenewable
+        formatter: format_applecare_yes_no
     -   column: applecare.isCanceled
         i18n_header: applecare.column.isCanceled
+        formatter: format_applecare_yes_no
     -   column: applecare.contractCancelDateTime
         i18n_header: applecare.column.contractCancelDateTime
     -   column: applecare.agreementNumber
