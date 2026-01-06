@@ -31,7 +31,7 @@ class Applecare_controller extends Module_controller
      */
     public function sync()
     {
-        $scriptPath = realpath($this->module_path . 'sync_applecare.php');
+        $scriptPath = realpath($this->module_path . '/sync_applecare.php');
 
         if (! $scriptPath || ! file_exists($scriptPath)) {
             return $this->jsonError('sync_applecare.php not found', 500);
