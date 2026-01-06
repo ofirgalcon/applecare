@@ -141,29 +141,29 @@ try {
         CURLOPT_SSL_VERIFYPEER => true,
         CURLOPT_TIMEOUT => 30,
     ]);
-    
+
     $response = curl_exec($ch);
     $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     $curl_error = curl_error($ch);
     curl_close($ch);
-    
+
     if ($curl_error) {
         throw new Exception("cURL error: {$curl_error}");
     }
-    
+
     if ($http_code !== 200) {
         throw new Exception("Failed to get access token: HTTP $http_code - $response");
     }
-    
+
     $data = json_decode($response, true);
-    
+
     if (!isset($data['access_token'])) {
         throw new Exception("No access token in response: $response");
     }
-    
+
     $access_token = $data['access_token'];
     echo "✓ Access token generated successfully\n";
-    
+
 } catch (Exception $e) {
     die("ERROR: " . $e->getMessage() . "\n");
 }
@@ -182,12 +182,12 @@ try {
         'collation' => 'utf8_unicode_ci',
         'prefix' => '',
     ];
-    
+
     $capsule = new \Illuminate\Database\Capsule\Manager;
     $capsule->addConnection($db_config);
     $capsule->setAsGlobal();
     $capsule->bootEloquent();
-    
+
     echo "✓ Database connected\n\n";
 } catch (Exception $e) {
     die("ERROR: Could not connect to database: " . $e->getMessage() . "\n");
@@ -231,7 +231,7 @@ foreach ($devices as $device) {
         $skipped++;
         continue;
     }
-    
+
     // Check rate limit
     if ($requests_made >= $rate_limit) {
         $elapsed = time() - $window_start;
@@ -243,44 +243,43 @@ foreach ($devices as $device) {
         $requests_made = 0;
         $window_start = time();
     }
-    
+
     echo "Processing $serial... ";
-    
+
     try {
         // Call Apple API
         $url = $api_base_url . "orgDevices/{$serial}/appleCareCoverage";
-        
+
         $ch = curl_init($url);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_HTTPHEADER, [
             'Authorization: Bearer ' . $access_token,
             'Content-Type: application/json',
         ]);
-        
-          // Force HTTP/1.1 to avoid HTTP/2 protocol issues
+
+        // Force HTTP/1.1 to avoid HTTP/2 protocol issues
         curl_setopt($ch, CURLOPT_HTTP_VERSION, CURL_HTTP_VERSION_1_1);
-        
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
         curl_setopt($ch, CURLOPT_TIMEOUT, 30);
         curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
-        
+
         // Enable verbose output for debugging (comment out in production)
         // curl_setopt($ch, CURLOPT_VERBOSE, true);
-        
+
         $response = curl_exec($ch);
         $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $curl_error = curl_error($ch);
         $curl_errno = curl_errno($ch);
         curl_close($ch);
-        
+
         $requests_made++;
-        
+
         if ($curl_error) {
             // HTTP/2 errors - retry with exponential backoff
             if ($curl_errno == 92 || $curl_errno == 16) { // HTTP/2 stream errors
                 echo "RETRY (HTTP/2 error)... ";
                 sleep(2);
-                
+
                 // Retry once
                 $ch = curl_init($url);
                 curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
@@ -296,7 +295,7 @@ foreach ($devices as $device) {
                 $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
                 $curl_error = curl_error($ch);
                 curl_close($ch);
-                
+
                 if ($curl_error) {
                     throw new Exception("cURL error after retry: {$curl_error}");
                 }
@@ -305,7 +304,6 @@ foreach ($devices as $device) {
             }
         }
 
-            
         if ($http_code !== 200) {
             $error_msg = "SKIP (HTTP $http_code)";
             if ($http_code === 404) {
@@ -315,7 +313,7 @@ foreach ($devices as $device) {
             } elseif ($http_code === 403) {
                 $error_msg .= " - Access forbidden (check API permissions)";
             }
-            
+
             // Try to parse error response for more details
             if (!empty($response)) {
                 $error_data = json_decode($response, true);
@@ -333,24 +331,24 @@ foreach ($devices as $device) {
                     }
                 }
             }
-            
+
             echo "$error_msg\n";
             $skipped++;
             continue;
         }
-        
+
         $data = json_decode($response, true);
-        
+
         if (!isset($data['data']) || empty($data['data'])) {
             echo "SKIP (no coverage)\n";
             $skipped++;
             continue;
         }
-        
+
         // Save coverage data
         foreach ($data['data'] as $coverage) {
             $attrs = $coverage['attributes'] ?? [];
-            
+
             $coverage_data = [
                 'id' => $coverage['id'],
                 'serial_number' => $serial,
@@ -364,12 +362,12 @@ foreach ($devices as $device) {
                 'endDateTime' => !empty($attrs['endDateTime']) ? date('Y-m-d', strtotime($attrs['endDateTime'])) : null,
                 'contractCancelDateTime' => !empty($attrs['contractCancelDateTime']) ? date('Y-m-d', strtotime($attrs['contractCancelDateTime'])) : null,
             ];
-            
+
             // Insert or update
             $existing = $capsule::table('applecare')
                 ->where('id', $coverage['id'])
                 ->first();
-            
+
             if ($existing) {
                 $capsule::table('applecare')
                     ->where('id', $coverage['id'])
@@ -378,10 +376,10 @@ foreach ($devices as $device) {
                 $capsule::table('applecare')->insert($coverage_data);
             }
         }
-        
+
         echo "OK (" . count($data['data']) . " coverage records)\n";
         $synced++;
-        
+
     } catch (Exception $e) {
         echo "ERROR (" . $e->getMessage() . ")\n";
         $errors++;

@@ -28,5 +28,5 @@ detail_widgets:
         view: applecare_detail_widget
 admin_pages:
     applecare_admin:
-        view: admin_form
+        view: applecare_admin
         i18n: applecare.admin.title

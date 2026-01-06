@@ -4,16 +4,16 @@
  * applecare class
  *
  * @package munkireport
- * @author 
+ * @author gmarnin
  **/
 class Applecare_controller extends Module_controller
 {
-	    function __construct()
+    public function __construct()
     {
         // Store module path
         $this->module_path = dirname(__FILE__);
     }
-	
+
     /**
      * Admin page entrypoint
      *
@@ -21,34 +21,17 @@ class Applecare_controller extends Module_controller
      */
     public function applecare_admin()
     {
-        // Pass empty result for compatibility with view expectations
-        $data = ['result' => null];
-        view('admin_form', $data, $this->module_path . '/');
+        $obj = new View();
+        $obj->view('applecare_admin', [], $this->module_path.'/views/');
     }
-    
-    /**
-     * Get applecare information for serial_number
-     *
-     * @param string $serial serial number
-     **/
-    public function get_data($serial_number = '')
-    {
-        jsonView(
-            Applecare_model::select('applecare.*')
-            ->whereSerialNumber($serial_number)
-            ->filter()
-            ->limit(1)
-            ->first()
-            ->toArray()
-        );
-    }
+
 
     /**
      * Run the sync script and return stdout/stderr
      */
     public function sync()
     {
-        $scriptPath = realpath($this->module_path . '/sync_applecare.php');
+        $scriptPath = realpath($this->module_path . 'sync_applecare.php');
 
         if (! $scriptPath || ! file_exists($scriptPath)) {
             return $this->jsonError('sync_applecare.php not found', 500);
@@ -94,56 +77,25 @@ class Applecare_controller extends Module_controller
         exit;
     }
 
-public function get_list($column = '')
-{
-    // Get raw DB rows
-    $rows = Applecare_model::select("applecare.$column AS label")
-        ->selectRaw('count(*) AS count')
-        ->filter()
-        ->groupBy($column)
-        ->orderBy('count', 'desc')
-        ->get()
-        ->toArray();
-
-    // Format fields for MunkiReport listing
-    $formatted = array_map(function ($row) {
-
-        // Format dates (AppleCare records can include these if grouped differently)
-        $dateFields = [
-            'startDateTime',
-            'endDateTime',
-            'contractCancelDateTime',
-            'last_updated'
-        ];
-
-        foreach ($dateFields as $field) {
-            if (isset($row[$field]) && !empty($row[$field])) {
-                if (preg_match('/^\d{4}-\d{2}-\d{2}/', $row[$field])) {
-                    try {
-                        $dt = new DateTime($row[$field]);
-                        $row[$field] = $dt->format('m-d-Y');
-                    } catch (\Exception $e) {
-                        // leave original if invalid
-                    }
-                }
-            }
-        }
-
-        // Format booleans (0/1 -> True/False)
-        if (isset($row['isRenewable'])) {
-            $row['isRenewable'] = (!empty($row['isRenewable']) && $row['isRenewable'] != '0') ? 'True' : 'False';
-        }
-
-        if (isset($row['isCanceled'])) {
-            $row['isCanceled'] = (!empty($row['isCanceled']) && $row['isCanceled'] != '0') ? 'True' : 'False';
-        }
-
-        return $row;
-
-    }, $rows);
-
-    jsonView($formatted);
-}
+    /**
+     * Get data for widgets
+     *
+     * @return void
+     * @author tuxudo
+     **/
+    public function get_binary_widget($column = '')
+    {
+        jsonView(
+            Applecare_model::select($column . ' AS label')
+                ->selectRaw('count(*) AS count')
+                ->whereNotNull($column)
+                ->filter()
+                ->groupBy($column)
+                ->orderBy('count', 'desc')
+                ->get()
+                ->toArray()
+        );
+    }
 
     /**
      * Sync AppleCare data for a single serial number
@@ -223,16 +175,16 @@ public function get_list($column = '')
             $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
             $curl_error = curl_error($ch);
             curl_close($ch);
-            
+
             if ($curl_error || $http_code !== 200) {
                 return $this->jsonError('Failed to get access token: ' . ($curl_error ?: "HTTP $http_code"), 500);
             }
-            
+
             $data = json_decode($response, true);
             if (!isset($data['access_token'])) {
                 return $this->jsonError('No access token in response', 500);
             }
-            
+
             $access_token = $data['access_token'];
 
             // Call Apple API for this serial number
@@ -248,12 +200,12 @@ public function get_list($column = '')
             curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
             curl_setopt($ch, CURLOPT_TIMEOUT, 30);
             curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 10);
-            
+
             $response = curl_exec($ch);
             $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
             $curl_error = curl_error($ch);
             curl_close($ch);
-            
+
             if ($curl_error) {
                 return $this->jsonError('cURL error: ' . $curl_error, 500);
             }
@@ -267,7 +219,7 @@ public function get_list($column = '')
                 } elseif ($http_code === 403) {
                     $error_msg = "Access forbidden (check API permissions)";
                 }
-                
+
                 // Try to parse error response
                 if (!empty($response)) {
                     $error_data = json_decode($response, true);
@@ -285,12 +237,12 @@ public function get_list($column = '')
                         }
                     }
                 }
-                
+
                 return $this->jsonError($error_msg, $http_code);
             }
-            
+
             $data = json_decode($response, true);
-            
+
             if (!isset($data['data']) || empty($data['data'])) {
                 // No coverage data - clear existing records for this serial
                 Applecare_model::where('serial_number', $serial_number)->delete();
@@ -302,7 +254,7 @@ public function get_list($column = '')
                 ]);
                 return;
             }
-            
+
             // Save coverage data
             $records_synced = 0;
             foreach ($data['data'] as $coverage) {
@@ -321,23 +273,23 @@ public function get_list($column = '')
                     'endDateTime' => !empty($attrs['endDateTime']) ? date('Y-m-d', strtotime($attrs['endDateTime'])) : null,
                     'contractCancelDateTime' => !empty($attrs['contractCancelDateTime']) ? date('Y-m-d', strtotime($attrs['contractCancelDateTime'])) : null,
                 ];
-                
+
                 // Insert or update - ensure id is included in both search and data
                 $coverage_id = $coverage['id'];
                 Applecare_model::updateOrCreate(
                     ['id' => $coverage_id],
                     array_merge(['id' => $coverage_id], $coverage_data)
                 );
-                
+
                 $records_synced++;
             }
-            
+
             jsonView([
                 'success' => true,
                 'message' => "Synced {$records_synced} coverage record(s) for {$serial_number}",
                 'records_synced' => $records_synced,
             ]);
-            
+
         } catch (\Exception $e) {
             return $this->jsonError('Sync failed: ' . $e->getMessage(), 500);
         }
@@ -365,18 +317,18 @@ public function get_list($column = '')
                 jsonView($data);
                 return;
             }
-            
+
             // Track unique devices in each category
             $activeDevices = [];
             $expiringSoonDevices = [];
             $expiredDevices = [];
             $inactiveDevices = [];
             $allDevices = [];
-            
+
             $now = new DateTime();
             $thirtyDays = clone $now;
             $thirtyDays->modify('+30 days');
-            
+
             // Loop through all records in the applecare table
             foreach ($records as $record) {
                 $serialNumber = $record->serial_number;
@@ -384,28 +336,28 @@ public function get_list($column = '')
                 if (empty($serialNumber)) {
                     continue;
                 }
-                
+
                 // Track all unique devices
                 $allDevices[$serialNumber] = true;
-                
+
                 $status = strtoupper(trim($record->status ?? ''));
                 $isCanceled = !empty($record->isCanceled);
-                
+
                 // Check if device is inactive
                 if ($status === 'INACTIVE' || empty($status) || $isCanceled) {
                     $inactiveDevices[$serialNumber] = true;
                     continue;
                 }
-                
+
                 // Check endDateTime for active/expired/expiring status
                 if (!empty($record->endDateTime)) {
                     try {
                         $endDate = new DateTime($record->endDateTime);
-                        
+
                         if ($endDate > $now) {
                             // Active coverage - end date is in the future
                             $activeDevices[$serialNumber] = true;
-                            
+
                             // Check if expiring within 30 days
                             if ($endDate <= $thirtyDays) {
                                 $expiringSoonDevices[$serialNumber] = true;
@@ -428,19 +380,36 @@ public function get_list($column = '')
                     }
                 }
             }
-            
+
             // Count unique devices in each category
             $data['total_devices'] = count($allDevices);
             $data['active'] = count($activeDevices);
             $data['expiring_soon'] = count($expiringSoonDevices);
             $data['expired'] = count($expiredDevices);
             $data['inactive'] = count($inactiveDevices);
-            
+
         } catch (\Throwable $e) {
             // Return zeros on error
             error_log('AppleCare get_stats error: ' . $e->getMessage());
         }
 
         jsonView($data);
+    }
+
+    /**
+     * Get applecare information for serial_number
+     *
+     * @param string $serial serial number
+     **/
+    public function get_data($serial_number = '')
+    {
+        jsonView(
+            Applecare_model::select('applecare.*')
+            ->whereSerialNumber($serial_number)
+            ->filter()
+            ->limit(1)
+            ->first()
+            ->toArray()
+        );
     }
 } 

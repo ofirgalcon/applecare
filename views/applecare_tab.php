@@ -29,7 +29,7 @@ $(document).on('appReady', function(){
                 );
                 return;
             }
-            
+
             $.each(data, function(key,val){
                 if (val !== null && val !== undefined && val !== '') {
                     var th = $('<th>').text(i18n.t('applecare.column.' + key));
@@ -39,15 +39,15 @@ $(document).on('appReady', function(){
             });
         });
     };
-    
+
     // Load initial data
     loadAppleCareData();
-    
+
     // Handle sync button click
     $('#applecare-sync-btn').on('click', function() {
         var $btn = $(this);
         var $message = $('#applecare-sync-message');
-        
+
         // Disable button and show loading state
         $btn.prop('disabled', true);
         $btn.find('i').addClass('fa-spin');
@@ -60,10 +60,10 @@ $(document).on('appReady', function(){
             success: function(response) {
                 $btn.prop('disabled', false);
                 $btn.find('i').removeClass('fa-spin');
-                
+
                 if (response.success) {
                     $message.removeClass('alert-info').addClass('alert-success').html('<i class="fa fa-check"></i> ' + (response.message || 'Sync completed successfully'));
-                    
+
                     // Reload the data
                     setTimeout(function() {
                         loadAppleCareData();
@@ -76,7 +76,7 @@ $(document).on('appReady', function(){
             error: function(xhr) {
                 $btn.prop('disabled', false);
                 $btn.find('i').removeClass('fa-spin');
-                
+
                 var errorMsg = 'Sync failed';
                 if (xhr.responseJSON && xhr.responseJSON.message) {
                     errorMsg = xhr.responseJSON.message;
@@ -85,7 +85,7 @@ $(document).on('appReady', function(){
                 } else {
                     errorMsg = 'Sync failed: HTTP ' + xhr.status;
                 }
-                
+
                 $message.removeClass('alert-info').addClass('alert-danger').html('<i class="fa fa-exclamation-triangle"></i> ' + errorMsg);
             }
         });

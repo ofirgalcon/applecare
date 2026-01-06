@@ -81,9 +81,9 @@ Based off [AppleCareCoverage.Attributes](https://developer.apple.com/documentati
 * contractCancelDateTime
 * agreementNumber - varchar(255) - Agreement number associated with device coverage. This field isn’t applicable for Limited Warranty and AppleCare+ for Business Essentials.
 * paymentType - varchar(255) - Payment type of device coverage. Possible values: ‘ABE_SUBSCRIPTION’, ‘PAID_UP_FRONT’, ‘SUBSCRIPTION’, ‘NONE’
-* isRenewable - TINTINT - Indicates whether coverage renews after endDateTime for the device. This field isn’t applicable for Limited Warranty.
-* isCanceled - TINTINT - Indicates whether coverage is canceled for the device. This field isn’t applicable for Limited Warranty and AppleCare+ for Business Essentials.
-* last_updated - TIMESTAMP - The last time this serial number was checked using the API
+* isRenewable - Bool - Indicates whether coverage renews after endDateTime for the device. This field isn’t applicable for Limited Warranty.
+* isCanceled - Bool - Indicates whether coverage is canceled for the device. This field isn’t applicable for Limited Warranty and AppleCare+ for Business Essentials.
+* last_updated - BIGINT - The last time this serial number was checked using the API
 
 
 
