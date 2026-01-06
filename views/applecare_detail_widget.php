@@ -28,8 +28,8 @@ $(document).on('appReady', function () {
         }
 
         var rows = [
-            { label: i18n.t('applecare.status'), value: data.status },
-            { label: i18n.t('applecare.description'), value: data.description },
+            { label: i18n.t('applecare.column.status'), value: data.status },
+            { label: i18n.t('applecare.column.description'), value: data.description },
             { label: i18n.t('applecare.column.endDateTime'), value: data.endDateTime }
         ];
 
