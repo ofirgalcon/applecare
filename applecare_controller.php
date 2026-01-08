@@ -31,6 +31,14 @@ class Applecare_controller extends Module_controller
      */
     public function sync()
     {
+        // Check if this is a streaming request (SSE)
+        $stream = isset($_GET['stream']) && $_GET['stream'] === '1';
+        
+        if ($stream) {
+            return $this->syncStream();
+        }
+
+        // Legacy JSON response for backward compatibility
         $scriptPath = realpath($this->module_path . '/sync_applecare.php');
 
         if (! $scriptPath || ! file_exists($scriptPath)) {
@@ -65,6 +73,141 @@ class Applecare_controller extends Module_controller
             'stdout' => $stdout,
             'stderr' => $stderr,
         ]);
+    }
+
+    /**
+     * Stream sync output in real-time using Server-Sent Events
+     */
+    private function syncStream()
+    {
+        // Set headers for Server-Sent Events
+        header('Content-Type: text/event-stream');
+        header('Cache-Control: no-cache');
+        header('Connection: keep-alive');
+        header('X-Accel-Buffering: no'); // Disable nginx buffering
+
+        // Flush output immediately
+        if (ob_get_level()) {
+            ob_end_clean();
+        }
+        flush();
+
+        $scriptPath = realpath($this->module_path . '/sync_applecare.php');
+
+        if (! $scriptPath || ! file_exists($scriptPath)) {
+            $this->sendEvent('error', 'sync_applecare.php not found');
+            return;
+        }
+
+        $phpBin = PHP_BINARY ?: 'php';
+        $cmd = escapeshellcmd($phpBin) . ' ' . escapeshellarg($scriptPath);
+
+        $descriptorSpec = [
+            1 => ['pipe', 'w'], // stdout
+            2 => ['pipe', 'w'], // stderr
+        ];
+
+        // Set pipes to non-blocking mode
+        $process = proc_open($cmd, $descriptorSpec, $pipes, dirname($scriptPath));
+
+        if (! is_resource($process)) {
+            $this->sendEvent('error', 'Failed to start sync process');
+            return;
+        }
+
+        // Set pipes to non-blocking mode
+        stream_set_blocking($pipes[1], false);
+        stream_set_blocking($pipes[2], false);
+
+        $stdoutBuffer = '';
+        $stderrBuffer = '';
+        $processStatus = proc_get_status($process);
+        $running = $processStatus['running'];
+
+        // Read output in real-time
+        while ($running) {
+            // Read from stdout
+            $stdoutChunk = fread($pipes[1], 8192);
+            if ($stdoutChunk !== false && $stdoutChunk !== '') {
+                $stdoutBuffer .= $stdoutChunk;
+                // Send complete lines
+                while (($pos = strpos($stdoutBuffer, "\n")) !== false) {
+                    $line = substr($stdoutBuffer, 0, $pos + 1);
+                    $stdoutBuffer = substr($stdoutBuffer, $pos + 1);
+                    $this->sendEvent('output', rtrim($line, "\n\r"));
+                }
+            }
+
+            // Read from stderr
+            $stderrChunk = fread($pipes[2], 8192);
+            if ($stderrChunk !== false && $stderrChunk !== '') {
+                $stderrBuffer .= $stderrChunk;
+                // Send complete lines
+                while (($pos = strpos($stderrBuffer, "\n")) !== false) {
+                    $line = substr($stderrBuffer, 0, $pos + 1);
+                    $stderrBuffer = substr($stderrBuffer, $pos + 1);
+                    $this->sendEvent('error', rtrim($line, "\n\r"));
+                }
+            }
+
+            // Check if process is still running
+            $processStatus = proc_get_status($process);
+            $running = $processStatus['running'];
+
+            // Small delay to prevent CPU spinning
+            if ($running) {
+                usleep(100000); // 100ms
+            }
+
+            // Flush output
+            if (ob_get_level()) {
+                ob_flush();
+            }
+            flush();
+        }
+
+        // Send any remaining buffer
+        if (!empty($stdoutBuffer)) {
+            $this->sendEvent('output', $stdoutBuffer);
+        }
+        if (!empty($stderrBuffer)) {
+            $this->sendEvent('error', $stderrBuffer);
+        }
+
+        // Close pipes
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+
+        // Get exit code
+        $exitCode = proc_close($process);
+
+        // Send completion event
+        $this->sendEvent('complete', [
+            'exit_code' => $exitCode,
+            'success' => $exitCode === 0
+        ]);
+    }
+
+    /**
+     * Send a Server-Sent Event
+     */
+    private function sendEvent($event, $data)
+    {
+        if (is_array($data)) {
+            $data = json_encode($data);
+        } else {
+            // Escape newlines and carriage returns for SSE format
+            // Since we're sending line-by-line, this is mainly for safety
+            $data = str_replace(["\n", "\r"], ['\\n', ''], $data);
+        }
+        
+        echo "event: $event\n";
+        echo "data: $data\n\n";
+        
+        if (ob_get_level()) {
+            ob_flush();
+        }
+        flush();
     }
 
     private function jsonError($message, $status = 500)
@@ -273,6 +416,16 @@ class Applecare_controller extends Module_controller
                     'endDateTime' => !empty($attrs['endDateTime']) ? date('Y-m-d', strtotime($attrs['endDateTime'])) : null,
                     'contractCancelDateTime' => !empty($attrs['contractCancelDateTime']) ? date('Y-m-d', strtotime($attrs['contractCancelDateTime'])) : null,
                 ];
+                
+                foreach (['isRenewable', 'isCanceled'] as $field) {
+    if (isset($coverage_data[$field])) {
+        $coverage_data[$field] =
+            ($coverage_data[$field] === true ||
+             $coverage_data[$field] === 1 ||
+             $coverage_data[$field] === '1' ||
+             strtolower($coverage_data[$field]) === 'true') ? 1 : 0;
+    }
+}
 
                 // Insert or update - ensure id is included in both search and data
                 $coverage_id = $coverage['id'];
