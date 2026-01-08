@@ -30,40 +30,91 @@
     var $btn = $('#sync-applecare');
     var $status = $('#sync-status');
     var $output = $('#sync-output');
+    var eventSource = null;
+    var outputBuffer = '';
 
-    function setOutput(text){
-        $output.text(text || '');
+    function appendOutput(text){
+        if (text) {
+            outputBuffer += text + '\n';
+            $output.text(outputBuffer);
+            // Auto-scroll to bottom
+            $output.scrollTop($output[0].scrollHeight);
+        }
+    }
+
+    function clearOutput(){
+        outputBuffer = '';
+        $output.text('');
+    }
+
+    function stopSync(){
+        if (eventSource) {
+            eventSource.close();
+            eventSource = null;
+        }
+        $btn.prop('disabled', false);
     }
 
     $btn.on('click', function(){
+        // Prevent multiple simultaneous syncs
+        if (eventSource) {
+            return;
+        }
+
         $btn.prop('disabled', true);
         $status.text('Running…');
-        setOutput('Running sync...');
+        clearOutput();
+        appendOutput('Starting AppleCare sync...\n');
 
-        $.ajax({
-            url: appUrl + '/module/applecare/sync',
-            method: 'POST',
-            dataType: 'json'
-        }).done(function(data){
-            var text = '';
-            text += 'Success: ' + (data.success ? 'yes' : 'no') + '\n';
-            if (typeof data.exit_code !== 'undefined') {
-                text += 'Exit code: ' + data.exit_code + '\n';
-            }
-            if (data.stdout) {
-                text += '\n--- STDOUT ---\n' + data.stdout + '\n';
-            }
-            if (data.stderr) {
-                text += '\n--- STDERR ---\n' + data.stderr + '\n';
-            }
-            setOutput(text);
-            $status.text(data.success ? 'Finished' : 'Finished with errors');
-        }).fail(function(jq, textStatus, errorThrown){
-            setOutput('Request failed: ' + textStatus + (errorThrown ? ' (' + errorThrown + ')' : ''));
-            $status.text('Failed');
-        }).always(function(){
-            $btn.prop('disabled', false);
+        // Use Server-Sent Events for real-time streaming
+        var url = appUrl + '/module/applecare/sync?stream=1';
+        eventSource = new EventSource(url);
+
+        eventSource.onopen = function() {
+            appendOutput('Connected to sync process...\n');
+        };
+
+        eventSource.addEventListener('output', function(e) {
+            var data = e.data;
+            // Unescape newlines
+            data = data.replace(/\\n/g, '\n');
+            appendOutput(data);
         });
+
+        eventSource.addEventListener('error', function(e) {
+            var data = e.data;
+            // Unescape newlines
+            data = data.replace(/\\n/g, '\n');
+            appendOutput('ERROR: ' + data);
+        });
+
+        eventSource.addEventListener('complete', function(e) {
+            var data = JSON.parse(e.data);
+            appendOutput('\n================================================\n');
+            appendOutput('Sync Complete\n');
+            appendOutput('Exit code: ' + data.exit_code + '\n');
+            appendOutput('================================================\n');
+            
+            $status.text(data.success ? 'Finished' : 'Finished with errors');
+            stopSync();
+        });
+
+        eventSource.onerror = function(e) {
+            if (eventSource.readyState === EventSource.CLOSED) {
+                // Connection closed - sync completed or error occurred
+                if ($status.text() === 'Running…') {
+                    // Unexpected closure
+                    appendOutput('\nConnection closed unexpectedly.\n');
+                    $status.text('Connection closed');
+                }
+                stopSync();
+            } else {
+                // Connection error
+                appendOutput('\nConnection error occurred.\n');
+                $status.text('Connection error');
+                stopSync();
+            }
+        };
     });
 })();
 </script>
