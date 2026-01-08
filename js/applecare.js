@@ -16,7 +16,7 @@ var format_applecare_DateToMoment = function(colNumber, row){
     if(moment(date, 'YYYY-MM-DD 00:00:00', true).isValid())
     {
         console.log("here")
-        var formatted='<time title="'+ moment(date, 'YYYY-MM-DD h:mm:ss').fromNow() + '" </time>' + moment(date, 'YYYY-MM-DD h:mm:ss').format("YYYY-MM-DD");
+        var formatted='<time title="'+ moment(date, 'YYYY-MM-DD h:mm:ss').fromNow() + '" </time>' + moment(date, 'YYYY-MM-DD h:mm:ss').format("MM-DD-YYYY");
         col.html(formatted);
     } else if (date) {
         col.text(date)
