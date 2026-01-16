@@ -24,7 +24,7 @@
 </div>
 
 <div id="device-info-section">
-    <h3 data-i18n="applecare.device_info.title">Device Information</h3>
+    <h3 data-i18n="applecare.device_info.title">AxM Device Information</h3>
     <table id="device-info-table" style="max-width:475px;"><tbody></tbody></table>
 </div>
 
@@ -123,14 +123,30 @@ $(document).on('appReady', function(){
                     }
                     // Format device assignment status
                     else if (key === 'device_assignment_status') {
-                        var statusUpper = String(data[key]).toUpperCase();
-                        var statusDisplay = data[key].charAt(0).toUpperCase() + data[key].slice(1).toLowerCase();
-                        if (statusUpper === 'ASSIGNED') {
-                            td.html('<span class="label label-success">' + statusDisplay + '</span>');
-                        } else if (statusUpper === 'UNASSIGNED') {
-                            td.html('<span class="label label-warning">' + statusDisplay + '</span>');
+                        if (!data[key] || data[key] === null || data[key] === '') {
+                            // If we have released_from_org_date, assume it's released
+                            if (data['released_from_org_date']) {
+                                td.html('<span class="label label-danger">Released</span>');
+                            } else {
+                                td.html('<span class="label label-default">Unknown</span>');
+                            }
                         } else {
-                            td.text(statusDisplay);
+                            var statusUpper = String(data[key]).toUpperCase();
+                            var statusDisplay = data[key].charAt(0).toUpperCase() + data[key].slice(1).toLowerCase();
+                            if (statusUpper === 'ASSIGNED') {
+                                td.html('<span class="label label-success">' + statusDisplay + '</span>');
+                            } else if (statusUpper === 'UNASSIGNED') {
+                                td.html('<span class="label label-warning">' + statusDisplay + '</span>');
+                            } else if (statusUpper === 'RELEASED') {
+                                td.html('<span class="label label-danger">' + statusDisplay + '</span>');
+                            } else {
+                                // Handle other statuses - if we have released_from_org_date, show Released
+                                if (data['released_from_org_date']) {
+                                    td.html('<span class="label label-danger">Released</span>');
+                                } else {
+                                    td.text(statusDisplay);
+                                }
+                            }
                         }
                     }
                     // Format purchase source type

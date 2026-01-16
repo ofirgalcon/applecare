@@ -1,5 +1,6 @@
 i18n_title: applecare.listing.title
 js_link: module/applecare/js/applecare
+not_null_column: applecare.device_assignment_status
 table:
     -   column: machine.computer_name
         i18n_header: listing.computername
@@ -7,12 +8,22 @@ table:
         tab_link: applecare
     -   column: reportdata.serial_number
         i18n_header: serial
+    -   column: reportdata.long_username
+        i18n_header: username
     -   column: applecare.status
         i18n_header: applecare.column.status
         formatter: format_applecare_status
         filter: status_filter
+    -   column: applecare.device_assignment_status
+        i18n_header: applecare.column.device_assignment_status
+        formatter: format_applecare_device_assignment_status
+        filter: device_assignment_status_filter
     -   column: applecare.description
         i18n_header: applecare.column.description
+    -   column: applecare.purchase_source_id
+        i18n_header: applecare.column.purchase_source_name
+        formatter: format_applecare_reseller
+        filter: reseller_filter
     -   column: applecare.startDateTime
         i18n_header: applecare.column.startDateTime
         formatter: format_applecare_DateToMoment
@@ -30,7 +41,7 @@ table:
         i18n_header: applecare.column.isCanceled
         formatter: format_applecare_isCanceled
         filter: isCanceled_filter
-    -   column: applecare.contractCancelDateTime
-        i18n_header: applecare.column.contractCancelDateTime
+    # -   column: applecare.contractCancelDateTime
+    #     i18n_header: applecare.column.contractCancelDateTime
     -   column: applecare.agreementNumber
         i18n_header: applecare.column.agreementNumber

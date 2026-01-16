@@ -32,23 +32,60 @@ class Applecare_helper
     }
 
     /**
+     * Get machine group key for a serial number
+     * 
+     * Machine group key is stored in munkireportinfo table in the passphrase column
+     *
+     * @param string $serial_number
+     * @return string|null Machine group key or null if not found
+     */
+    private function getMachineGroupKey($serial_number)
+    {
+        try {
+            $machine = new \Model();
+            // Get machine group key from munkireportinfo.passphrase
+            $sql = "SELECT passphrase 
+                    FROM munkireportinfo 
+                    WHERE serial_number = ? 
+                    AND passphrase IS NOT NULL 
+                    AND passphrase != ''
+                    LIMIT 1";
+            $result = $machine->query($sql, [$serial_number]);
+            if (!empty($result) && isset($result[0])) {
+                return $result[0]->passphrase ?? null;
+            }
+        } catch (\Exception $e) {
+            // Silently fail - machine group key is optional
+        }
+        return null;
+    }
+
+    /**
      * Get org-specific AppleCare config with fallback
+     * 
+     * Looks for org-specific env vars based on:
+     * 1. Machine group key prefix (e.g., "6F730D13-451108" -> "6F730D13_APPLECARE_API_URL")
+     * 2. ClientID prefix (e.g., "abcd-efg" -> "ABCD_APPLECARE_API_URL")
+     * 3. Default config (APPLECARE_API_URL, APPLECARE_CLIENT_ASSERTION)
      *
      * @param string $serial_number
      * @return array|null
      */
     private function getAppleCareConfig($serial_number)
     {
-        $client_id = $this->getClientId($serial_number);
-
         $api_url = null;
         $client_assertion = null;
         $rate_limit = 20;
 
-        if (!empty($client_id)) {
-            $parts = explode('-', $client_id, 2);
+        // Try machine group key prefix first
+        $mg_key = $this->getMachineGroupKey($serial_number);
+        if (!empty($mg_key)) {
+            // Extract prefix from machine group key (e.g., "6F730D13-451108" -> "6F730D13")
+            // Take everything before first hyphen or use entire key if no hyphen
+            $parts = explode('-', $mg_key, 2);
             $prefix = strtoupper($parts[0]);
 
+            // Try org-specific config based on machine group prefix
             $org_api_url_key = $prefix . '_APPLECARE_API_URL';
             $org_assertion_key = $prefix . '_APPLECARE_CLIENT_ASSERTION';
             $org_rate_limit_key = $prefix . '_APPLECARE_RATE_LIMIT';
@@ -62,6 +99,34 @@ class Applecare_helper
             }
         }
 
+        // Fallback to ClientID prefix if machine group key not found or config vars are empty
+        if (empty($api_url) || empty($client_assertion)) {
+            $client_id = $this->getClientId($serial_number);
+            if (!empty($client_id)) {
+                // Extract prefix from ClientID (e.g., "abcd-efg" -> "ABCD")
+                // Take everything before first hyphen or use entire ClientID if no hyphen
+                $parts = explode('-', $client_id, 2);
+                $prefix = strtoupper($parts[0]);
+
+                // Try org-specific config based on ClientID prefix
+                $org_api_url_key = $prefix . '_APPLECARE_API_URL';
+                $org_assertion_key = $prefix . '_APPLECARE_CLIENT_ASSERTION';
+                $org_rate_limit_key = $prefix . '_APPLECARE_RATE_LIMIT';
+
+                if (empty($api_url)) {
+                    $api_url = getenv($org_api_url_key);
+                }
+                if (empty($client_assertion)) {
+                    $client_assertion = getenv($org_assertion_key);
+                }
+                $org_rate_limit = getenv($org_rate_limit_key);
+                if (!empty($org_rate_limit)) {
+                    $rate_limit = (int)$org_rate_limit;
+                }
+            }
+        }
+
+        // Fallback to default config if org-specific not found
         if (empty($api_url)) {
             $api_url = getenv('APPLECARE_API_URL');
         }
@@ -177,12 +242,22 @@ class Applecare_helper
         curl_close($ch);
 
         // Temporary logging for all fetches
-        error_log("AppleCare FETCH: Token generation - HTTP {$http_code}");
+        // error_log("AppleCare FETCH: Token generation - HTTP {$http_code}");
 
         if ($curl_error) {
             throw new \Exception("cURL error: {$curl_error}");
         }
 
+        if ($http_code === 429) {
+            // Extract Retry-After header if available
+            $retry_after = 60; // Default to 60 seconds
+            $headers = curl_getinfo($ch, CURLINFO_HEADER_TEXT);
+            if (preg_match('/Retry-After:\s*(\d+)/i', $headers, $matches)) {
+                $retry_after = (int)$matches[1];
+            }
+            throw new \Exception("Failed to get access token: HTTP 429 - Rate limit exceeded. Retry after {$retry_after}s - $response");
+        }
+        
         if ($http_code !== 200) {
             throw new \Exception("Failed to get access token: HTTP $http_code - $response");
         }
@@ -243,7 +318,7 @@ class Applecare_helper
         $requests++;
 
         // Temporary logging for all fetches
-        error_log("AppleCare FETCH: Device lookup for {$serial_number} - URL: {$device_url} - HTTP {$device_http_code}");
+        // error_log("AppleCare FETCH: Device lookup for {$serial_number} - URL: {$device_url} - HTTP {$device_http_code}");
 
         // If device not found in ABM, skip immediately
         if ($device_http_code === 404) {
@@ -337,7 +412,7 @@ class Applecare_helper
         $requests++;
 
         // Temporary logging for all fetches
-        error_log("AppleCare FETCH: Coverage for {$serial_number} - URL: {$url} - HTTP {$http_code}");
+        // error_log("AppleCare FETCH: Coverage for {$serial_number} - URL: {$url} - HTTP {$http_code}");
 
         if ($curl_error) {
             // HTTP/2 errors - retry once
@@ -363,7 +438,7 @@ class Applecare_helper
                 $requests++;
 
                 // Temporary logging for all fetches (retry)
-                error_log("AppleCare FETCH: Coverage for {$serial_number} - URL: {$url} - HTTP {$http_code} (RETRY)");
+                // error_log("AppleCare FETCH: Coverage for {$serial_number} - URL: {$url} - HTTP {$http_code} (RETRY)");
 
                 if ($curl_error) {
                     throw new \Exception("cURL error after retry: {$curl_error}");
@@ -457,6 +532,116 @@ class Applecare_helper
         $data = json_decode($body, true);
 
         if (!isset($data['data']) || empty($data['data'])) {
+            // No coverage, but we still have device info - save it
+            // This happens when devices are released from the org but still exist in ABM
+            if (!empty($device_info) && isset($device_info['serial_number'])) {
+                $fetch_timestamp = time();
+                
+                // Use API's updatedDateTime if available
+                $last_updated = null;
+                if (!empty($device_attrs['updatedDateTime'])) {
+                    $last_updated = strtotime($device_attrs['updatedDateTime']);
+                }
+                
+                // Prepare device data (without coverage fields)
+                $device_data = array_merge($device_info, [
+                    'id' => $serial_number . '_NO_COVERAGE', // Placeholder ID for devices with no coverage
+                    'serial_number' => $serial_number,
+                    'status' => null, // No coverage status
+                    'description' => null,
+                    'agreementNumber' => null,
+                    'paymentType' => null,
+                    'isRenewable' => 0,
+                    'isCanceled' => 0,
+                    'startDateTime' => null,
+                    'endDateTime' => null,
+                    'contractCancelDateTime' => null,
+                    'last_updated' => $last_updated,
+                    'last_fetched' => $fetch_timestamp,
+                ]);
+                
+                // Translate reseller ID to name if config exists
+                if (!empty($device_data['purchase_source_id'])) {
+                    $resellerName = $this->getResellerName($device_data['purchase_source_id']);
+                    if ($resellerName && $resellerName !== $device_data['purchase_source_id']) {
+                        $device_data['purchase_source_name'] = $resellerName;
+                        $device_data['purchase_source_id_display'] = $device_data['purchase_source_id'];
+                    }
+                }
+                
+                // Update or create device info record
+                // First, try to update any existing records for this serial number
+                $existing_records = \Applecare_model::where('serial_number', $serial_number)->get();
+                if ($existing_records->count() > 0) {
+                    // Update all existing records with latest device info
+                    foreach ($existing_records as $record) {
+                        // Only update device info fields, preserve coverage fields
+                        $update_data = [
+                            'model' => $device_data['model'],
+                            'part_number' => $device_data['part_number'],
+                            'product_family' => $device_data['product_family'],
+                            'product_type' => $device_data['product_type'],
+                            'color' => $device_data['color'],
+                            'device_capacity' => $device_data['device_capacity'],
+                            'device_assignment_status' => $device_data['device_assignment_status'],
+                            'purchase_source_type' => $device_data['purchase_source_type'],
+                            'purchase_source_id' => $device_data['purchase_source_id'],
+                            'purchase_source_name' => $device_data['purchase_source_name'] ?? null,
+                            'purchase_source_id_display' => $device_data['purchase_source_id_display'] ?? null,
+                            'order_number' => $device_data['order_number'],
+                            'order_date' => $device_data['order_date'],
+                            'added_to_org_date' => $device_data['added_to_org_date'],
+                            'released_from_org_date' => $device_data['released_from_org_date'],
+                            'wifi_mac_address' => $device_data['wifi_mac_address'],
+                            'ethernet_mac_address' => $device_data['ethernet_mac_address'],
+                            'bluetooth_mac_address' => $device_data['bluetooth_mac_address'],
+                            'last_fetched' => $fetch_timestamp,
+                        ];
+                        $record->update($update_data);
+                    }
+                } else {
+                    // No existing records, create a placeholder record with device info
+                    $max_retries = 3;
+                    $retry_count = 0;
+                    $saved = false;
+                    
+                    while ($retry_count < $max_retries && !$saved) {
+                        try {
+                            \Applecare_model::updateOrCreate(
+                                ['id' => $device_data['id']],
+                                $device_data
+                            );
+                            $saved = true;
+                        } catch (\Exception $e) {
+                            $error_message = $e->getMessage();
+                            // Check if it's a connection error
+                            if (strpos($error_message, 'server has gone away') !== false || 
+                                strpos($error_message, 'Lost connection') !== false ||
+                                strpos($error_message, '2006') !== false) {
+                                $retry_count++;
+                                if ($retry_count < $max_retries) {
+                                    try {
+                                        \DB::reconnect();
+                                        usleep(500000); // 0.5 seconds
+                                    } catch (\Exception $reconnect_error) {
+                                        error_log("AppleCare: Failed to reconnect to database: " . $reconnect_error->getMessage());
+                                    }
+                                } else {
+                                    error_log("AppleCare: Failed to save device info record after {$max_retries} retries: {$error_message}");
+                                    throw $e;
+                                }
+                            } else {
+                                throw $e;
+                            }
+                        }
+                    }
+                }
+                
+                // Device info was collected - count as successful API call
+                return ['success' => true, 'records' => 0, 'requests' => $requests, 'message' => 'No Coverage, getting device Information'];
+            }
+            
+            // No coverage and no device info - this is a true skip
             return ['success' => false, 'records' => 0, 'requests' => $requests, 'message' => 'SKIP (no coverage)'];
         }
 
@@ -511,12 +696,48 @@ class Applecare_helper
                 }
             }
 
-            // Insert or update
-            \Applecare_model::updateOrCreate(
-                ['id' => $coverage['id']],
-                $coverage_data
-            );
-            $records_saved++;
+            // Insert or update with retry logic for connection timeouts
+            $max_retries = 3;
+            $retry_count = 0;
+            $saved = false;
+            
+            while ($retry_count < $max_retries && !$saved) {
+                try {
+                    \Applecare_model::updateOrCreate(
+                        ['id' => $coverage['id']],
+                        $coverage_data
+                    );
+                    $saved = true;
+                } catch (\Exception $e) {
+                    $error_message = $e->getMessage();
+                    // Check if it's a connection error
+                    if (strpos($error_message, 'server has gone away') !== false || 
+                        strpos($error_message, 'Lost connection') !== false ||
+                        strpos($error_message, '2006') !== false) {
+                        $retry_count++;
+                        if ($retry_count < $max_retries) {
+                            // Reconnect to database
+                            try {
+                                \DB::reconnect();
+                                // Small delay before retry
+                                usleep(500000); // 0.5 seconds
+                            } catch (\Exception $reconnect_error) {
+                                error_log("AppleCare: Failed to reconnect to database: " . $reconnect_error->getMessage());
+                            }
+                        } else {
+                            error_log("AppleCare: Failed to save coverage record after {$max_retries} retries: {$error_message}");
+                            throw $e;
+                        }
+                    } else {
+                        // Not a connection error, rethrow immediately
+                        throw $e;
+                    }
+                }
+            }
+            
+            if ($saved) {
+                $records_saved++;
+            }
         }
 
         return [

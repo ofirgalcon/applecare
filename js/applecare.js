@@ -77,17 +77,54 @@ var format_applecare_status = function(colNumber, row){
     var statusDisplay = status.charAt(0).toUpperCase() + status.slice(1).toLowerCase();
     
     if (statusUpper === 'ACTIVE') {
-        var endDateText = findEndDateInRow(colNumber, row);
+        // Try to get endDateTime from DataTables raw data first
+        var oTable = $('.table').DataTable();
+        var rowData = oTable.row(row).data();
+        var endDateText = null;
+        
+        // endDateTime column index calculation:
+        // status=colNumber, device_assignment_status=colNumber+1, description=colNumber+2, 
+        // purchase_source_id=colNumber+3, startDateTime=colNumber+4, endDateTime=colNumber+5
+        if (rowData && Array.isArray(rowData) && rowData[colNumber + 5]) {
+            endDateText = rowData[colNumber + 5];
+        } else {
+            // Fallback: try to get from DOM
+            var endDateCol = $('td:eq('+(colNumber+5)+')', row);
+            if (endDateCol.length) {
+                // Get the raw text first (before any formatting)
+                endDateText = endDateCol.text();
+                
+                // If it's already formatted (has HTML), try to get from title attribute
+                if (endDateCol.html() !== endDateText) {
+                    var titleAttr = endDateCol.find('span[title]').attr('title');
+                    if (titleAttr) {
+                        // Title contains full date in 'llll' format, parse it
+                        var titleDate = moment(titleAttr);
+                        if (titleDate.isValid()) {
+                            endDateText = titleDate.format('YYYY-MM-DD');
+                        }
+                    }
+                }
+            }
+            
+            // Final fallback to findEndDateInRow
+            if (!endDateText || !endDateText.trim()) {
+                endDateText = findEndDateInRow(colNumber, row);
+            }
+        }
+        
         var labelClass = 'label-success';
         var tooltipText = '';
+        var displayText = statusDisplay;
         
         // Check if end date is less than 31 days away
-        if (endDateText) {
+        if (endDateText && endDateText.trim()) {
             var parsedEndDate = parseDateWithFallbacks(endDateText);
-            if (parsedEndDate) {
+            if (parsedEndDate && parsedEndDate.isValid()) {
                 var daysUntil = parsedEndDate.diff(moment(), 'days');
                 if (daysUntil >= 0 && daysUntil < 31) {
                     labelClass = 'label-warning';
+                    displayText = (typeof i18n !== 'undefined' && i18n.t) ? i18n.t('applecare.expiring_soon') : 'Expiring Soon';
                     tooltipText = 'Coverage expires in ' + daysUntil + ' day' + (daysUntil !== 1 ? 's' : '');
                 }
             }
@@ -98,7 +135,7 @@ var format_applecare_status = function(colNumber, row){
         if (tooltipText) {
             statusHtml += ' title="' + tooltipText.replace(/"/g, '&quot;') + '" data-toggle="tooltip"';
         }
-        statusHtml += '>' + statusDisplay.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</span>';
+        statusHtml += '>' + displayText.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</span>';
         col.html(statusHtml);
         if (tooltipText) {
             col.find('[data-toggle="tooltip"]').tooltip();
@@ -215,11 +252,166 @@ var isCanceled_filter = function(colNumber, d) {
     }
 }
 
+var format_applecare_device_assignment_status = function(colNumber, row) {
+    var col = $('td:eq('+colNumber+')', row),
+        status = col.text();
+    
+    if (!status || status.trim() === '') {
+        col.html('<span class="label label-default">Unknown</span>');
+        return;
+    }
+    
+    var statusUpper = String(status).toUpperCase();
+    
+    // DEVICE_ASSIGNMENT_UNKNOWN with released_from_org_date should be displayed as Released
+    // Since we can't easily check released_from_org_date in the formatter, we'll display
+    // DEVICE_ASSIGNMENT_UNKNOWN as Released (matching widget behavior)
+    if (statusUpper === 'DEVICE_ASSIGNMENT_UNKNOWN') {
+        col.html('<span class="label label-danger">Released</span>');
+        return;
+    }
+    
+    var statusDisplay = status.charAt(0).toUpperCase() + status.slice(1).toLowerCase();
+    
+    if (statusUpper === 'ASSIGNED') {
+        col.html('<span class="label label-success">' + statusDisplay.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</span>');
+    } else if (statusUpper === 'UNASSIGNED') {
+        col.html('<span class="label label-warning">' + statusDisplay.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</span>');
+    } else if (statusUpper === 'RELEASED') {
+        col.html('<span class="label label-danger">' + statusDisplay.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</span>');
+    } else {
+        col.text(statusDisplay);
+    }
+}
+
+var device_assignment_status_filter = function(colNumber, d) {
+    if(d.search.value.match(/^assigned$/i)) {
+        d.columns[colNumber].search.value = 'ASSIGNED';
+        d.columns[colNumber].search.regex = false;
+        d.search.value = '';
+    }
+    if(d.search.value.match(/^unassigned$/i)) {
+        d.columns[colNumber].search.value = 'UNASSIGNED';
+        d.columns[colNumber].search.regex = false;
+        d.search.value = '';
+    }
+    if(d.search.value.match(/^(released|DEVICE_ASSIGNMENT_UNKNOWN)$/i)) {
+        // Released devices may have NULL or DEVICE_ASSIGNMENT_UNKNOWN in the database
+        // We need to search for both, but DataTables can't do OR searches easily
+        // So we'll search for DEVICE_ASSIGNMENT_UNKNOWN (which is what the API returns)
+        d.columns[colNumber].search.value = 'DEVICE_ASSIGNMENT_UNKNOWN';
+        d.columns[colNumber].search.regex = false;
+        d.search.value = '';
+    }
+}
+
+// Reseller ID to name mapping (loaded from server)
+var resellerConfig = {};
+var resellerConfigLoaded = false;
+
+// Load reseller config on page load (load early, before appReady if possible)
+(function() {
+    $.getJSON(appUrl + '/module/applecare/get_reseller_config', function(data) {
+        resellerConfig = data || {};
+        resellerConfigLoaded = true;
+    }).fail(function() {
+        console.warn('AppleCare: Failed to load reseller config');
+        resellerConfigLoaded = true; // Mark as loaded even on failure to prevent infinite waiting
+    });
+})();
+
+// Also load on appReady as backup
+$(document).on('appReady', function() {
+    if (!resellerConfigLoaded) {
+        $.getJSON(appUrl + '/module/applecare/get_reseller_config', function(data) {
+            resellerConfig = data || {};
+            resellerConfigLoaded = true;
+        }).fail(function() {
+            console.warn('AppleCare: Failed to load reseller config');
+            resellerConfigLoaded = true;
+        });
+    }
+});
+
+// Export filter functions to global scope (required for YAML configs)
+var format_applecare_reseller = function(colNumber, row) {
+    var col = $('td:eq('+colNumber+')', row),
+        resellerId = col.text();
+    
+    if (!resellerId || resellerId.trim() === '') {
+        col.text('');
+        return;
+    }
+    
+    // Translate reseller ID to name using loaded config
+    var resellerName = resellerConfig[resellerId];
+    
+    // Try case-insensitive match if exact match not found
+    if (!resellerName) {
+        var resellerIdUpper = resellerId.toUpperCase();
+        for (var key in resellerConfig) {
+            if (key.toUpperCase() === resellerIdUpper) {
+                resellerName = resellerConfig[key];
+                break;
+            }
+        }
+    }
+    
+    // Display translated name if available, otherwise show ID
+    if (resellerName && resellerName !== resellerId) {
+        col.text(resellerName);
+    } else {
+        col.text(resellerId);
+    }
+}
+
+var reseller_filter = function(colNumber, d) {
+    // Only activate if search value matches a known reseller ID or name from the config
+    // This prevents interfering with normal text searches
+    if (!d.search.value || !d.search.value.trim()) {
+        return;
+    }
+    
+    var searchValue = d.search.value.trim();
+    var matchedResellerId = null;
+    
+    // First check if search value is a reseller ID (case-insensitive)
+    // This handles widget clicks which now use IDs in the hash
+    for (var resellerId in resellerConfig) {
+        if (resellerId.toLowerCase() === searchValue.toLowerCase()) {
+            matchedResellerId = resellerId;
+            break;
+        }
+    }
+    
+    // If not found as ID, check if it matches a reseller name (case-insensitive)
+    // This handles manual searches by name
+    if (!matchedResellerId) {
+        for (var resellerId in resellerConfig) {
+            var resellerName = resellerConfig[resellerId];
+            if (resellerName && resellerName.toLowerCase() === searchValue.toLowerCase()) {
+                matchedResellerId = resellerId;
+                break;
+            }
+        }
+    }
+    
+    // Only apply filter if we found a match
+    if (matchedResellerId) {
+        d.columns[colNumber].search.value = matchedResellerId;
+        d.columns[colNumber].search.regex = false;
+        d.search.value = '';
+    }
+    // Otherwise, let normal text search work
+}
+
 // Export filter functions to global scope (required for YAML configs)
 window.status_filter = status_filter;
 window.paymentType_filter = paymentType_filter;
 window.isRenewable_filter = isRenewable_filter;
 window.isCanceled_filter = isCanceled_filter;
+window.device_assignment_status_filter = device_assignment_status_filter;
+window.reseller_filter = reseller_filter;
 
 // Parse hash parameters for filtering
 var applecareHashParams = {};
@@ -245,11 +437,99 @@ function wrapApplecareFilter() {
     if (typeof mr !== 'undefined' && mr.listingFilter && mr.listingFilter.filter && !mr.listingFilter.filter._applecareWrapped) {
         var originalFilter = mr.listingFilter.filter;
         mr.listingFilter.filter = function(d, columnFilters) {
-            // Call original filter first (handles columnFilters from YAML)
-            originalFilter.call(this, d, columnFilters);
-            
             // Re-parse hash in case it changed
             parseApplecareHash();
+            
+            // Handle scrollbox widget hash (just a label value, not key=value)
+            // If hash exists but no key=value pairs were parsed, treat hash as search value
+            var hash = window.location.hash.substring(1);
+            if (hash && Object.keys(applecareHashParams).length === 0) {
+                // This is a scrollbox widget hash - decode it and set as search value
+                try {
+                    var decodedHash = decodeURIComponent(hash);
+                    // Only set if it's not already set (to allow manual searches)
+                    if (!d.search.value || d.search.value.trim() === '') {
+                        d.search.value = decodedHash;
+                    }
+                } catch(e) {
+                    // If decoding fails, use hash as-is
+                    if (!d.search.value || d.search.value.trim() === '') {
+                        d.search.value = hash;
+                    }
+                }
+            }
+            
+            // Check if global search matches a reseller name and convert to ID search
+            // Only do this if resellerConfig is loaded and has data
+            if (d.search.value && d.search.value.trim() && resellerConfigLoaded && resellerConfig && Object.keys(resellerConfig).length > 0) {
+                var searchValue = d.search.value.trim();
+                var matchedResellerId = null;
+                
+                // First check for exact name match (case-insensitive) - prioritize exact matches
+                for (var resellerId in resellerConfig) {
+                    var resellerName = resellerConfig[resellerId];
+                    if (resellerName && resellerName.toLowerCase() === searchValue.toLowerCase()) {
+                        matchedResellerId = resellerId;
+                        break;
+                    }
+                }
+                
+                // Then check for exact ID match
+                if (!matchedResellerId) {
+                    for (var resellerId in resellerConfig) {
+                        if (resellerId.toLowerCase() === searchValue.toLowerCase()) {
+                            matchedResellerId = resellerId;
+                            break;
+                        }
+                    }
+                }
+                
+                // Finally check for partial name match (only if no exact match found)
+                if (!matchedResellerId) {
+                    for (var resellerId in resellerConfig) {
+                        var resellerName = resellerConfig[resellerId];
+                        if (resellerName && resellerName.toLowerCase().indexOf(searchValue.toLowerCase()) !== -1) {
+                            matchedResellerId = resellerId;
+                            break;
+                        }
+                    }
+                }
+                
+                // If we found a match, search the reseller column by ID
+                if (matchedResellerId) {
+                    // First try to find column index from columnFilters (most reliable)
+                    var resellerColumnIndex = null;
+                    if (columnFilters) {
+                        for (var j = 0; j < columnFilters.length; j++) {
+                            if (columnFilters[j].filter === 'reseller_filter') {
+                                resellerColumnIndex = columnFilters[j].column;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // Fallback: find by column name
+                    if (resellerColumnIndex === null) {
+                        for (var i = 0; i < d.columns.length; i++) {
+                            var colName = d.columns[i].name || d.columns[i].data;
+                            if (colName && (colName === 'applecare.purchase_source_id' || colName.indexOf('purchase_source_id') !== -1)) {
+                                resellerColumnIndex = i;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // If we found the column, set the search value
+                    if (resellerColumnIndex !== null && d.columns[resellerColumnIndex]) {
+                        d.columns[resellerColumnIndex].search.value = matchedResellerId;
+                        d.columns[resellerColumnIndex].search.regex = false;
+                        d.search.value = ''; // Clear global search
+                    }
+                }
+            }
+            
+            // Call original filter first (handles columnFilters from YAML)
+            originalFilter.call(this, d, columnFilters);
             
             // Apply hash filters - use where clause for date filtering
             // Initialize where as array if needed

@@ -9,12 +9,16 @@
                 <strong>Warning:</strong> The sync will stop if you close this page.
                 <br><strong>Server timeout:</strong> Your server has a PHP execution time limit (max_execution_time: 300 seconds / 5 minutes). 
                 For large syncs (100+ devices), the sync may timeout. For long-running syncs, use the CLI script instead: <code>php sync_applecare.php</code>
+                <div style="padding-top: 4px;"><strong>Devices to process:</strong> <span id="device-count-display">Loading...</span></div>
             </div>
 
-            <div class="form-group">
+            <div class="form-group" style="margin-top: 15px;">
                 <button id="sync-applecare" class="btn btn-primary">
                     <i class="fa fa-refresh"></i> Run AppleCare Sync
                 </button>
+                <label class="checkbox-inline" style="margin-left:15px;">
+                    <input type="checkbox" id="exclude-existing-checkbox"> Exclude devices with existing AppleCare records
+                </label>
                 <span id="sync-status" class="text-muted" style="margin-left:8px;"></span>
             </div>
             
@@ -36,6 +40,9 @@
             </div>
         </div>
         <div class="col-lg-5">
+            <h3 style="margin-top: 0;">&nbsp;</h3>
+            <p style="margin-bottom: 15px;">&nbsp;</p>
+            <h3><i class="fa fa-info-circle"></i> <span data-i18n="applecare.system_status.title">System Status</span></h3>
             <div id="AppleCare-System-Status"></div>
         </div>
     </div>
@@ -44,7 +51,9 @@
 <script>
 (function(){
     var $btn = $('#sync-applecare');
+    var $excludeCheckbox = $('#exclude-existing-checkbox');
     var $status = $('#sync-status');
+    var $deviceCountDisplay = $('#device-count-display');
     var $output = $('#sync-output');
     var $completionMsg = $('#sync-completion-message');
     var eventSource = null;
@@ -57,7 +66,7 @@
     
     // Load admin status data (similar to jamf_admin.php)
     $.getJSON(appUrl + '/module/applecare/get_admin_data', function(data) {
-        var statusRows = '<table class="table table-striped table-condensed"><tbody>';
+        var statusRows = '<table class="table table-striped"><tbody>';
         
         // API URL configured
         statusRows += '<tr><th>API URL Configured</th><td>' + 
@@ -85,6 +94,38 @@
     }).fail(function() {
         $('#AppleCare-System-Status').html('<div class="alert alert-warning">Unable to load system status</div>');
     });
+
+    // Load device count and update display
+    function updateDeviceCount() {
+        var excludeExisting = $excludeCheckbox.is(':checked');
+        var url = appUrl + '/module/applecare/get_device_count';
+        if (excludeExisting) {
+            url += '?exclude_existing=1';
+        }
+        
+        $.getJSON(url, function(data) {
+            if (data.count !== undefined) {
+                var count = data.count;
+                var text = count + ' device' + (count !== 1 ? 's' : '');
+                if (excludeExisting) {
+                    text += ' (excluding devices with existing records)';
+                }
+                $deviceCountDisplay.text(text);
+            } else {
+                $deviceCountDisplay.text('Unable to load count');
+            }
+        }).fail(function() {
+            $deviceCountDisplay.text('Unable to load count');
+        });
+    }
+
+    // Update count when checkbox changes
+    $excludeCheckbox.on('change', function() {
+        updateDeviceCount();
+    });
+    
+    // Load initial count
+    updateDeviceCount();
 
     function updateProgress() {
         if (totalDevices > 0) {
@@ -206,24 +247,36 @@
             eventSource = null;
         }
         $btn.prop('disabled', false);
+        $excludeCheckbox.prop('disabled', false);
     }
 
-    $btn.on('click', function(){
+    function startSync() {
         // Prevent multiple simultaneous syncs
         if (eventSource) {
             return;
         }
 
+        var excludeExisting = $excludeCheckbox.is(':checked');
+        
         $btn.prop('disabled', true);
+        $excludeCheckbox.prop('disabled', true);
         $status.text('Running…');
         clearOutput();
-        appendOutput('Starting AppleCare sync...\n');
+        
+        if (excludeExisting) {
+            appendOutput('Starting AppleCare sync (excluding devices with existing records)...\n');
+        } else {
+            appendOutput('Starting AppleCare sync...\n');
+        }
         
         // Show progress bar immediately (will be updated with actual counts)
         $('#sync-progress').removeClass('hide');
 
         // Use Server-Sent Events for real-time streaming
         var url = appUrl + '/module/applecare/sync?stream=1';
+        if (excludeExisting) {
+            url += '&exclude_existing=1';
+        }
         eventSource = new EventSource(url);
 
         eventSource.onopen = function() {
@@ -338,6 +391,10 @@
                 stopSync();
             }
         };
+    }
+
+    $btn.on('click', function(){
+        startSync();
     });
 })();
 </script>

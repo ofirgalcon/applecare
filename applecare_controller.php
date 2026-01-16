@@ -42,31 +42,60 @@ class Applecare_controller extends Module_controller
     }
 
     /**
+     * Get machine group key for a serial number
+     * 
+     * Machine group key is stored in munkireportinfo table in the passphrase column
+     *
+     * @param string $serial_number
+     * @return string|null Machine group key or null if not found
+     */
+    private function getMachineGroupKey($serial_number)
+    {
+        try {
+            $machine = new \Model();
+            // Get machine group key from munkireportinfo.passphrase
+            $sql = "SELECT passphrase 
+                    FROM munkireportinfo 
+                    WHERE serial_number = ? 
+                    AND passphrase IS NOT NULL 
+                    AND passphrase != ''
+                    LIMIT 1";
+            $result = $machine->query($sql, [$serial_number]);
+            if (!empty($result) && isset($result[0])) {
+                return $result[0]->passphrase ?? null;
+            }
+        } catch (\Exception $e) {
+            // Silently fail - machine group key is optional
+        }
+        return null;
+    }
+
+    /**
      * Get org-specific AppleCare config with fallback
      * 
-     * Looks for org-specific env vars based on ClientID prefix:
-     * - If ClientID = "abcd-efg", looks for ABCD_APPLECARE_API_URL and ABCD_APPLECARE_CLIENT_ASSERTION
-     * - Falls back to APPLECARE_API_URL and APPLECARE_CLIENT_ASSERTION if not found
+     * Looks for org-specific env vars based on:
+     * 1. Machine group name prefix (e.g., "6F730D13-451108" -> "6F730D13_APPLECARE_API_URL")
+     * 2. ClientID prefix (e.g., "abcd-efg" -> "ABCD_APPLECARE_API_URL")
+     * 3. Default config (APPLECARE_API_URL, APPLECARE_CLIENT_ASSERTION)
      *
      * @param string $serial_number
      * @return array ['api_url' => string, 'client_assertion' => string, 'rate_limit' => int] or null if not configured
      */
     private function getAppleCareConfig($serial_number)
     {
-        // Get ClientID for this device
-        $client_id = $this->getClientId($serial_number);
-        
         $api_url = null;
         $client_assertion = null;
         $rate_limit = 20; // Default
         
-        if (!empty($client_id)) {
-            // Extract prefix from ClientID (e.g., "abcd-efg" -> "ABCD")
-            // Take everything before first hyphen or use entire ClientID if no hyphen
-            $parts = explode('-', $client_id, 2);
+        // Try machine group key prefix first
+        $mg_key = $this->getMachineGroupKey($serial_number);
+        if (!empty($mg_key)) {
+            // Extract prefix from machine group key (e.g., "6F730D13-451108" -> "6F730D13")
+            // Take everything before first hyphen or use entire key if no hyphen
+            $parts = explode('-', $mg_key, 2);
             $prefix = strtoupper($parts[0]);
             
-            // Try org-specific config first
+            // Try org-specific config based on machine group prefix
             $org_api_url_key = $prefix . '_APPLECARE_API_URL';
             $org_assertion_key = $prefix . '_APPLECARE_CLIENT_ASSERTION';
             $org_rate_limit_key = $prefix . '_APPLECARE_RATE_LIMIT';
@@ -77,6 +106,33 @@ class Applecare_controller extends Module_controller
             
             if (!empty($org_rate_limit)) {
                 $rate_limit = (int)$org_rate_limit;
+            }
+        }
+        
+        // Fallback to ClientID prefix if machine group key not found or config vars are empty
+        if (empty($api_url) || empty($client_assertion)) {
+            $client_id = $this->getClientId($serial_number);
+            if (!empty($client_id)) {
+                // Extract prefix from ClientID (e.g., "abcd-efg" -> "ABCD")
+                // Take everything before first hyphen or use entire ClientID if no hyphen
+                $parts = explode('-', $client_id, 2);
+                $prefix = strtoupper($parts[0]);
+                
+                // Try org-specific config based on ClientID prefix
+                $org_api_url_key = $prefix . '_APPLECARE_API_URL';
+                $org_assertion_key = $prefix . '_APPLECARE_CLIENT_ASSERTION';
+                $org_rate_limit_key = $prefix . '_APPLECARE_RATE_LIMIT';
+                
+                if (empty($api_url)) {
+                    $api_url = getenv($org_api_url_key);
+                }
+                if (empty($client_assertion)) {
+                    $client_assertion = getenv($org_assertion_key);
+                }
+                $org_rate_limit = getenv($org_rate_limit_key);
+                if (!empty($org_rate_limit)) {
+                    $rate_limit = (int)$org_rate_limit;
+                }
             }
         }
         
@@ -144,6 +200,30 @@ class Applecare_controller extends Module_controller
     }
 
     /**
+     * Get reseller config for client-side translation
+     **/
+    public function get_reseller_config()
+    {
+        if (!$this->authorized()) {
+            jsonView(['error' => 'Not authorized'], 403);
+            return;
+        }
+        
+        $config_path = APP_ROOT . '/local/module_configs/applecare_resellers.yml';
+        $config = [];
+        
+        if (file_exists($config_path)) {
+            try {
+                $config = Yaml::parseFile($config_path);
+            } catch (\Exception $e) {
+                error_log('AppleCare: Error loading reseller config: ' . $e->getMessage());
+            }
+        }
+        
+        jsonView($config);
+    }
+
+    /**
      * Admin page entrypoint
      *
      * Renders the AppleCare admin form (sync UI)
@@ -180,7 +260,7 @@ class Applecare_controller extends Module_controller
         if (!is_dir($mrRoot) || !file_exists($mrRoot . '/vendor/autoload.php')) {
             return $this->jsonError('MunkiReport root not found: ' . $mrRoot, 500);
         }
-        
+
         $phpBin = PHP_BINARY ?: 'php';
         // Pass MR root as second argument to the script (script expects $argv[2])
         $cmd = escapeshellcmd($phpBin) . ' ' . escapeshellarg($scriptPath) . ' sync ' . escapeshellarg($mrRoot);
@@ -246,14 +326,27 @@ class Applecare_controller extends Module_controller
         flush();
 
         try {
+            // Check if we should exclude existing records
+            $excludeExisting = isset($_GET['exclude_existing']) && $_GET['exclude_existing'] === '1';
+            
+            // Start keep-alive timer to prevent SSE connection timeout
+            $last_keepalive = time();
+            
             // Call sync logic directly
-            $this->syncAll(function($message, $isError = false) {
+            $this->syncAll(function($message, $isError = false) use (&$last_keepalive) {
                 if ($isError) {
                     $this->sendEvent('error', $message);
                 } else {
                     $this->sendEvent('output', $message);
                 }
-            });
+                
+                // Send keep-alive comment every 30 seconds to prevent SSE timeout
+                $now = time();
+                if ($now - $last_keepalive >= 30) {
+                    $this->sendEvent('comment', 'keep-alive');
+                    $last_keepalive = $now;
+                }
+            }, $excludeExisting);
 
             // Send completion event
             $this->sendEvent('complete', [
@@ -313,6 +406,7 @@ class Applecare_controller extends Module_controller
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_POST => true,
+            CURLOPT_HEADER => true, // Include headers in response
             CURLOPT_HTTPHEADER => [
                 'Host: account.apple.com',
                 'Content-Type: application/x-www-form-urlencoded'
@@ -331,18 +425,36 @@ class Applecare_controller extends Module_controller
         $response = curl_exec($ch);
         $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $curl_error = curl_error($ch);
+        
+        // Get headers to check for Retry-After
+        $header_size = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+        $headers = substr($response, 0, $header_size);
+        $body = substr($response, $header_size);
+        
         curl_close($ch);
 
         // Temporary logging for all fetches
-        error_log("AppleCare FETCH: Token generation - HTTP {$http_code}");
+        // error_log("AppleCare FETCH: Token generation - HTTP {$http_code}");
 
         if ($curl_error) {
             throw new \Exception("cURL error: {$curl_error}");
         }
 
-        if ($http_code !== 200) {
-            throw new \Exception("Failed to get access token: HTTP $http_code - $response");
+        if ($http_code === 429) {
+            // Extract Retry-After header if available
+            $retry_after = 60; // Default to 60 seconds
+            if (preg_match('/Retry-After:\s*(\d+)/i', $headers, $matches)) {
+                $retry_after = (int)$matches[1];
+            }
+            throw new \Exception("Failed to get access token: HTTP 429 - Rate limit exceeded. Retry after {$retry_after}s - $body");
         }
+
+        if ($http_code !== 200) {
+            throw new \Exception("Failed to get access token: HTTP $http_code - $body");
+        }
+        
+        // Use body instead of response for JSON parsing
+        $response = $body;
 
         $data = json_decode($response, true);
 
@@ -362,7 +474,7 @@ class Applecare_controller extends Module_controller
      * @param callable $outputCallback Function to call for output (message, isError)
      * @return void
      */
-    private function syncAll($outputCallback = null)
+    private function syncAll($outputCallback = null, $excludeExisting = false)
     {
         // Create helper instance once for reuse
         require_once __DIR__ . '/lib/applecare_helper.php';
@@ -409,13 +521,47 @@ class Applecare_controller extends Module_controller
                 $default_api_base_url .= '/';
             }
 
-            // Generate access token for default config
-            try {
-                $default_access_token = $this->generateAccessToken($default_client_assertion, $default_api_base_url, $outputCallback);
-                $outputCallback("");
-            } catch (\Exception $e) {
-                $outputCallback("WARNING: Failed to generate default access token: " . $e->getMessage());
-                $outputCallback("");
+            // Generate access token for default config with retry logic
+            $default_access_token = null;
+            $max_retries = 3;
+            $retry_count = 0;
+            while ($retry_count < $max_retries && $default_access_token === null) {
+                try {
+                    $default_access_token = $this->generateAccessToken($default_client_assertion, $default_api_base_url, $outputCallback);
+                    // Wait 3 seconds after token generation to respect rate limits
+                    sleep(3);
+                    $outputCallback("");
+                    break; // Success, exit retry loop
+                } catch (\Exception $e) {
+                    $retry_count++;
+                    // Check if it's a 429 error with retry-after
+                    if (preg_match('/HTTP 429.*Retry after (\d+)s/i', $e->getMessage(), $matches)) {
+                        $retry_after = (int)$matches[1];
+                        if ($retry_count < $max_retries) {
+                            $outputCallback("Rate limit hit during token generation. Waiting {$retry_after}s before retry ({$retry_count}/{$max_retries})...");
+                            sleep($retry_after);
+                            continue; // Retry
+                        }
+                    } elseif (preg_match('/HTTP 429/i', $e->getMessage())) {
+                        // HTTP 429 without retry-after header, wait 60 seconds
+                        if ($retry_count < $max_retries) {
+                            $outputCallback("Rate limit hit during token generation. Waiting 60s before retry ({$retry_count}/{$max_retries})...");
+                            sleep(60);
+                            continue; // Retry
+                        }
+                    }
+                    
+                    // If we've exhausted retries or it's not a 429 error, show warning
+                    if ($retry_count >= $max_retries) {
+                        $outputCallback("WARNING: Failed to generate default access token after {$max_retries} retries: " . $e->getMessage());
+                        $outputCallback("");
+                    } else {
+                        // Non-429 error, don't retry
+                        $outputCallback("WARNING: Failed to generate default access token: " . $e->getMessage());
+                        $outputCallback("");
+                        break;
+                    }
+                }
             }
         }
 
@@ -440,6 +586,24 @@ class Applecare_controller extends Module_controller
             }
         } catch (\Exception $e) {
             throw new \Exception('Database query failed: ' . $e->getMessage());
+        }
+
+        // Filter out devices that already have AppleCare records if requested
+        // This includes devices with coverage data AND devices with only device info (no coverage)
+        if ($excludeExisting) {
+            $existingSerials = Applecare_model::select('serial_number')
+                ->distinct()
+                ->whereIn('serial_number', $devices)
+                ->whereNotNull('serial_number') // Ensure we have a valid serial number
+                ->pluck('serial_number')
+                ->toArray();
+            
+            $devices = array_diff($devices, $existingSerials);
+            $excludedCount = count($existingSerials);
+            
+            if ($excludedCount > 0) {
+                $outputCallback("Excluding $excludedCount device(s) that already have AppleCare records");
+            }
         }
 
         $total_devices = count($devices);
@@ -481,10 +645,10 @@ class Applecare_controller extends Module_controller
                 continue;
             }
 
-            // Send heartbeat every 30 seconds to keep connection alive
-            // This helps prevent timeouts on servers with max_execution_time limits
+            // Send heartbeat every 15 seconds to keep SSE connection alive
+            // This helps prevent timeouts on servers with max_execution_time limits and SSE connection timeouts
             $now = time();
-            if ($now - $last_heartbeat >= 30) {
+            if ($now - $last_heartbeat >= 15) {
                 $outputCallback("Heartbeat: Processing device $device_index of $total_devices...");
                 $last_heartbeat = $now;
                 
@@ -525,6 +689,8 @@ class Applecare_controller extends Module_controller
                     if (!isset($token_cache[$token_cache_key])) {
                         $device_client_assertion = $device_config['client_assertion'];
                         $token_cache[$token_cache_key] = $this->generateAccessToken($device_client_assertion, $device_api_url, function($msg) {});
+                        // Wait 3 seconds after token generation to respect rate limits
+                        sleep(3);
                     }
                     $device_access_token = $token_cache[$token_cache_key];
                     
@@ -575,9 +741,8 @@ class Applecare_controller extends Module_controller
                 if ($requests_made >= $throttle_threshold) {
                     $elapsed = time() - $window_start;
                     if ($elapsed < $rate_limit_window) {
-                        // Account for the 1 second wait we'll do after the next fetch
-                        // So we only need to wait the remaining time minus 1 second
-                        $sleep_time = max(0, $rate_limit_window - $elapsed - 1);
+                        // Wait until the rate limit window resets
+                        $sleep_time = max(0, $rate_limit_window - $elapsed);
                         if ($sleep_time > 0) {
                             $outputCallback("Approaching rate limit ({$requests_made}/{$effective_rate_limit}). Sleeping for {$sleep_time}s...");
                             sleep($sleep_time);
@@ -595,7 +760,7 @@ class Applecare_controller extends Module_controller
                     $skipped++;
                 }
                 
-                // Wait 1 second after each fetch (success, 404, or error), but not after "no config found"
+                // Wait 3 seconds after each fetch (success, 404, or error), but not after "no config found"
                 $should_wait = false;
                 if ($result['success']) {
                     // Always wait after successful sync
@@ -611,13 +776,13 @@ class Applecare_controller extends Module_controller
                 }
                 
                 if ($should_wait) {
-                    sleep(1);
+                    sleep(3);
                 }
             } catch (\Exception $e) {
                 $outputCallback("ERROR (" . $e->getMessage() . ")", true);
                 $errors++;
-                // Wait 1 second after errors too
-                sleep(1);
+                // Wait 3 seconds after errors too
+                sleep(3);
             }
 
             // Flush output periodically for streaming
@@ -687,6 +852,143 @@ class Applecare_controller extends Module_controller
      **/
     public function get_binary_widget($column = '')
     {
+        if (!$this->authorized()) {
+            jsonView(['error' => 'Not authorized'], 403);
+            return;
+        }
+
+        // Handle purchase_source_name specially - need to translate purchase_source_id to names
+        if ($column === 'purchase_source_name') {
+            try {
+                // Get distinct purchase_source_id values and translate them to names
+                // Count distinct devices per reseller (one device counted once even if it has multiple coverage records)
+                $model = new \Model();
+                $filter = get_machine_group_filter('WHERE', 'reportdata');
+                
+                // Build WHERE clause - use AND if filter already has WHERE, otherwise use WHERE
+                $where_clause = '';
+                if (!empty($filter)) {
+                    $where_clause = $filter . ' AND applecare.purchase_source_id IS NOT NULL';
+                } else {
+                    $where_clause = 'WHERE applecare.purchase_source_id IS NOT NULL';
+                }
+                
+                // Get one purchase_source_id per device, then count devices per reseller
+                $sql = "SELECT 
+                            MAX(applecare.purchase_source_id) AS purchase_source_id
+                        FROM applecare
+                        LEFT JOIN reportdata ON applecare.serial_number = reportdata.serial_number
+                        " . $where_clause . "
+                        GROUP BY applecare.serial_number";
+
+                // Aggregate by purchase_source_id
+                $temp_results = [];
+                $results = $model->query($sql);
+                foreach ($results as $obj) {
+                    if (!empty($obj->purchase_source_id)) {
+                        $resellerId = $obj->purchase_source_id;
+                        if (!isset($temp_results[$resellerId])) {
+                            $temp_results[$resellerId] = 0;
+                        }
+                        $temp_results[$resellerId]++;
+                    }
+                }
+
+                // Translate IDs to names and format output
+                $out = [];
+                foreach ($temp_results as $resellerId => $count) {
+                    // Translate reseller ID to name
+                    $resellerName = $this->getResellerName($resellerId);
+                    // Use translated name if available, otherwise use ID
+                    $displayName = ($resellerName && $resellerName !== $resellerId) 
+                        ? $resellerName 
+                        : $resellerId;
+                    
+                    // Use name as label for display (hash will contain name)
+                    // The filter function will convert the name to ID for searching
+                    $out[] = [
+                        'label' => $displayName,  // Name for display and hash
+                        'count' => $count
+                    ];
+                }
+                
+                // Sort by count descending
+                usort($out, function($a, $b) {
+                    return $b['count'] - $a['count'];
+                });
+
+                jsonView($out);
+                return;
+            } catch (\Exception $e) {
+                error_log('AppleCare get_binary_widget error for purchase_source_name: ' . $e->getMessage());
+                error_log('AppleCare get_binary_widget error trace: ' . $e->getTraceAsString());
+                jsonView(['error' => 'Failed to retrieve reseller data: ' . $e->getMessage()]);
+                return;
+            }
+        }
+
+        // Handle device_assignment_status specially - need to check released_from_org_date too
+        if ($column === 'device_assignment_status') {
+            // Use Model class for raw SQL queries (like other methods in this controller)
+            $model = new \Model();
+            $filter = get_machine_group_filter('WHERE', 'reportdata');
+            
+            // Get one value per device (using MAX to handle cases where device has multiple records)
+            // Then count devices by their device_assignment_status
+            // This ensures we count each device only once, even if it has multiple coverage records
+            // If device_assignment_status is NULL or 'DEVICE_ASSIGNMENT_UNKNOWN' and released_from_org_date is set, infer 'RELEASED'
+            $sql = "SELECT 
+                        CASE 
+                            WHEN MAX(applecare.released_from_org_date) IS NOT NULL 
+                                 AND (MAX(applecare.device_assignment_status) IS NULL 
+                                      OR MAX(applecare.device_assignment_status) = 'DEVICE_ASSIGNMENT_UNKNOWN') 
+                            THEN 'RELEASED'
+                            WHEN MAX(applecare.device_assignment_status) IS NOT NULL 
+                            THEN MAX(applecare.device_assignment_status)
+                            ELSE 'UNKNOWN'
+                        END AS status,
+                        COUNT(DISTINCT applecare.serial_number) AS count
+                    FROM applecare
+                    LEFT JOIN reportdata ON applecare.serial_number = reportdata.serial_number
+                    " . $filter . "
+                    GROUP BY applecare.serial_number";
+
+            // Now aggregate by status
+            $temp_results = [];
+            foreach ($model->query($sql) as $obj) {
+                $status = strtoupper($obj->status);
+                if (!isset($temp_results[$status])) {
+                    $temp_results[$status] = 0;
+                }
+                $temp_results[$status] += (int)$obj->count;
+            }
+
+            // Convert to expected format with title case labels
+            // Map status values to display labels
+            $status_labels = [
+                'ASSIGNED' => 'Assigned',
+                'UNASSIGNED' => 'Unassigned',
+                'RELEASED' => 'Released',
+                'UNKNOWN' => 'Unknown'
+            ];
+            
+            $out = [];
+            foreach ($temp_results as $status => $count) {
+                $label = isset($status_labels[$status]) ? $status_labels[$status] : ucfirst(strtolower($status));
+                $out[] = [
+                    'label' => $label,
+                    'count' => $count
+                ];
+            }
+            
+            // Sort by count descending
+            usort($out, function($a, $b) {
+                return $b['count'] - $a['count'];
+            });
+
+            jsonView($out);
+            return;
+        }
         jsonView(
             Applecare_model::select($column . ' AS label')
                 ->selectRaw('count(*) AS count')
@@ -862,17 +1164,24 @@ class Applecare_controller extends Module_controller
      **/
     public function get_data($serial_number = '')
     {
-        // Priority: 1) Active records, 2) AppleCare+ > Limited Warranty, 3) Most recent last_fetched
+        // Priority logic:
+        // 1) Active records first
+        // 2) Among active: AppleCare+ > AppleCare Protection Plan > Limited Warranty
+        // 3) Among inactive: Prioritize renewable (isRenewable = true)
+        // 4) Among inactive non-renewable: Latest endDateTime
         $record = Applecare_model::select('applecare.*')
             ->whereSerialNumber($serial_number)
             ->filter()
             ->orderByRaw("CASE WHEN status = 'ACTIVE' THEN 0 ELSE 1 END") // Active first
             ->orderByRaw("CASE 
-                WHEN description LIKE '%AppleCare+%' THEN 0 
-                WHEN description LIKE '%Limited Warranty%' THEN 1 
-                ELSE 2 
-            END") // AppleCare+ before Limited Warranty
-            ->orderBy('last_fetched', 'desc') // Most recent as final tiebreaker
+                WHEN status = 'ACTIVE' AND description LIKE '%AppleCare+%' THEN 0 
+                WHEN status = 'ACTIVE' AND description LIKE '%AppleCare Protection Plan%' THEN 1 
+                WHEN status = 'ACTIVE' AND description LIKE '%Limited Warranty%' THEN 2 
+                WHEN status = 'ACTIVE' THEN 3
+                ELSE 999
+            END") // Priority for active: AppleCare+ > Protection Plan > Limited Warranty
+            ->orderByRaw("CASE WHEN status = 'INACTIVE' AND isRenewable = 1 THEN 0 WHEN status = 'INACTIVE' AND isRenewable = 0 THEN 1 ELSE 999 END") // Among inactive: renewable first
+            ->orderByRaw("CASE WHEN status = 'INACTIVE' AND isRenewable = 0 AND endDateTime IS NOT NULL THEN UNIX_TIMESTAMP(endDateTime) ELSE 0 END DESC") // Among inactive non-renewable: latest end date
             ->first();
         
         if ($record) {
@@ -963,5 +1272,55 @@ class Applecare_controller extends Module_controller
         }
         
         jsonView($data);
+    }
+
+    /**
+     * Get device count for sync operations
+     * 
+     * @return void
+     */
+    public function get_device_count()
+    {
+        $excludeExisting = isset($_GET['exclude_existing']) && $_GET['exclude_existing'] === '1';
+        
+        try {
+            // Use Model class (like firmware/supported_os) instead of Eloquent model
+            $machine = new \Model();
+            $filter = get_machine_group_filter();
+
+            $sql = "SELECT machine.serial_number
+                    FROM machine
+                    LEFT JOIN reportdata USING (serial_number)
+                    $filter";
+
+            // Loop through each serial number for processing
+            $devices = [];
+            foreach ($machine->query($sql) as $serialobj) {
+                $devices[] = $serialobj->serial_number;
+            }
+
+            // Filter out devices that already have AppleCare records if requested
+            // This includes devices with coverage data AND devices with only device info (no coverage)
+            if ($excludeExisting) {
+                $existingSerials = Applecare_model::select('serial_number')
+                    ->distinct()
+                    ->whereIn('serial_number', $devices)
+                    ->whereNotNull('serial_number') // Ensure we have a valid serial number
+                    ->pluck('serial_number')
+                    ->toArray();
+                
+                $devices = array_diff($devices, $existingSerials);
+            }
+
+            jsonView([
+                'count' => count($devices),
+                'exclude_existing' => $excludeExisting
+            ]);
+        } catch (\Exception $e) {
+            jsonView([
+                'count' => 0,
+                'error' => $e->getMessage()
+            ]);
+        }
     }
 } 

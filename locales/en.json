@@ -63,6 +63,8 @@
         "isRenewable_title": "Renewable",
         "isCanceled_title": "Canceled",
         "contractCancelDateTime_title": "Contract Cancel Date",
-        "agreementNumber_title": "Agreement Number"
+        "agreementNumber_title": "Agreement Number",
+        "device_assignment_title": "Device Assignment",
+        "reseller_title": "Reseller"
     }
 }

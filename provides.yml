@@ -21,6 +21,10 @@ widgets:
         view: applecare_isRenewable_widget
     applecare_isCanceled:
         view: applecare_isCanceled_widget
+    applecare_device_assignment:
+        view: applecare_device_assignment_widget
+    applecare_reseller:
+        view: applecare_reseller_widget
     applecare_total:
         view: applecare_total_detail_widget
 detail_widgets:

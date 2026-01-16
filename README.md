@@ -7,7 +7,7 @@ This module requires Apple Business Manager or Apple School Manager API (AxM) cr
 * Automatic client-side syncing every 10-14 days (randomized interval)
 * Manual sync options (individual device or bulk)
 * Real-time progress tracking on admin page
-* Multi-organization support via Munki ClientID prefixes
+* Multi-organization support via machine group key or Munki ClientID prefixes
 * Intelligent rate limiting with HTTP 429 handling
 * Comprehensive device information (model, color, MAC addresses, etc.)
 
@@ -28,33 +28,62 @@ APPLECARE_RATE_LIMIT=20  # Optional, default is 20 calls per minute
 
 **Multiple Organizations:**
 
-The module supports multiple organizations by matching the Munki ClientID prefix (before first hyphen) with org-specific environment variables. This allows different devices to use different Apple Business/School Manager accounts.
+The module supports multiple organizations by matching either the machine group key prefix or the Munki ClientID prefix (before first hyphen) with org-specific environment variables. This allows different devices to use different Apple Business/School Manager accounts.
 
 **How it works:**
-1. The module looks up the Munki `ClientIdentifier` for each device
-2. Extracts the prefix before the first hyphen (e.g., `org1-device` → `ORG1`)
-3. Looks for org-specific env vars: `ORG1_APPLECARE_API_URL` and `ORG1_APPLECARE_CLIENT_ASSERTION`
-4. Falls back to default `APPLECARE_API_URL` and `APPLECARE_CLIENT_ASSERTION` if org-specific config is not found
+The module uses a priority-based lookup system:
+
+1. **First Priority: Machine Group Key** - Looks up the machine group key from `munkireportinfo.passphrase` for the device
+   - Extracts the prefix before the first hyphen (e.g., `6F730D13-451108-AC457…` → `6F730D13`)
+   - Looks for org-specific env vars: `6F730D13_APPLECARE_API_URL` and `6F730D13_APPLECARE_CLIENT_ASSERTION`
+   - If machine group key exists but config vars are empty, falls back to ClientID
+
+2. **Second Priority: Munki ClientID** - If machine group key not found or config vars empty:
+   - Looks up the Munki `ClientIdentifier` for the device
+   - Extracts the prefix before the first hyphen (e.g., `org1-device` → `ORG1`)
+   - Looks for org-specific env vars: `ORG1_APPLECARE_API_URL` and `ORG1_APPLECARE_CLIENT_ASSERTION`
+
+3. **Third Priority: Default Config** - Falls back to `APPLECARE_API_URL` and `APPLECARE_CLIENT_ASSERTION` if org-specific config is not found
 
 **Example:**
+
+**Using Machine Group Key:**
+If a device has machine group key `6F730D13-451108-AC457…` in `munkireportinfo.passphrase`:
+```bash
+# Organization 1 (using machine group key prefix)
+6F730D13_APPLECARE_API_URL=https://api-school.apple.com/v1/
+6F730D13_APPLECARE_CLIENT_ASSERTION="Org1 Assertion"
+```
+
+**Using Munki ClientID:**
+If a device has Munki ClientID `org1-device123`:
+```bash
+# Organization 1 (using ClientID prefix)
+ORG1_APPLECARE_API_URL=https://api-school.apple.com/v1/
+ORG1_APPLECARE_CLIENT_ASSERTION="Org1 Assertion"
+```
+
+**Complete Example with Fallback:**
 ```bash
 # Default (fallback)
 APPLECARE_API_URL=https://api-school.apple.com/v1/
 APPLECARE_CLIENT_ASSERTION="Default Assertion"
 
-# Organization 1
-ORG1_APPLECARE_API_URL=https://api-school.apple.com/v1/
-ORG1_APPLECARE_CLIENT_ASSERTION="Org1 Assertion"
+# Organization 1 (machine group key prefix)
+6F730D13_APPLECARE_API_URL=https://api-school.apple.com/v1/
+6F730D13_APPLECARE_CLIENT_ASSERTION="Org1 Assertion"
 
-# Organization 2
+# Organization 2 (ClientID prefix)
 ORG2_APPLECARE_API_URL=https://api-business.apple.com/v1/
 ORG2_APPLECARE_CLIENT_ASSERTION="Org2 Assertion"
 ```
 
 **Notes:**
 * Prefix matching is case-insensitive (e.g., `org1`, `ORG1`, `Org1` all match `ORG1_*` env vars)
-* If a device's ClientID doesn't have a hyphen, the entire ClientID is used as the prefix
+* Machine group key is stored in `munkireportinfo.passphrase` column
+* If a device's key/ClientID doesn't have a hyphen, the entire value is used as the prefix
 * Tokens are cached per organization to avoid regenerating them for each device
+* Machine group key matching takes precedence over ClientID matching
 
 Add `applecare` to the `Modules` section in your `.env` file.
 
@@ -152,7 +181,7 @@ Based on [AppleCareCoverage.Attributes](https://developer.apple.com/documentatio
 * Check client logs for "Running applecare" and "Requesting applecare" messages
 * Verify the plist exists: `/usr/local/munkireport/preflight.d/cache/applecare.plist`
 
-**HTTP 400 errors during sync:**
+**HTTP 40x errors during sync:**
 * Verify API credentials are correct
 * Check that the serial number exists in Apple Business/School Manager
 * Review server error logs for detailed error messages
