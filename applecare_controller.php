@@ -161,6 +161,22 @@ class Applecare_controller extends Module_controller
     }
 
     /**
+     * Normalize file path for cross-platform compatibility
+     * Handles Windows backslashes and double slashes
+     *
+     * @param string $path File path to normalize
+     * @return string Normalized path
+     */
+    private function normalizePath($path)
+    {
+        // Replace backslashes with forward slashes (Windows compatibility)
+        $path = str_replace('\\', '/', $path);
+        // Remove double slashes
+        $path = preg_replace('#/+#', '/', $path);
+        return $path;
+    }
+
+    /**
      * Load reseller config and translate ID to name
      *
      * @param string $reseller_id Reseller ID from purchase_source_id
@@ -172,7 +188,7 @@ class Applecare_controller extends Module_controller
             return null;
         }
         
-        $config_path = APP_ROOT . '/local/module_configs/applecare_resellers.yml';
+        $config_path = $this->normalizePath(APP_ROOT . '/local/module_configs/applecare_resellers.yml');
         if (!file_exists($config_path)) {
             error_log('AppleCare: Reseller config file not found at: ' . $config_path);
             return $reseller_id;
@@ -227,7 +243,7 @@ class Applecare_controller extends Module_controller
             return;
         }
         
-        $config_path = APP_ROOT . '/local/module_configs/applecare_resellers.yml';
+        $config_path = $this->normalizePath(APP_ROOT . '/local/module_configs/applecare_resellers.yml');
         $config = [];
         $error = null;
         
@@ -1315,7 +1331,7 @@ class Applecare_controller extends Module_controller
         }
         
         // Check reseller config file status
-        $config_path = APP_ROOT . '/local/module_configs/applecare_resellers.yml';
+        $config_path = $this->normalizePath(APP_ROOT . '/local/module_configs/applecare_resellers.yml');
         $data['reseller_config'] = [
             'exists' => file_exists($config_path),
             'readable' => is_readable($config_path),
