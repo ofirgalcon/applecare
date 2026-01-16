@@ -1071,7 +1071,10 @@ class Applecare_controller extends Module_controller
 
         try {
             // Get all records from applecare table
-            $records = Applecare_model::filter()->get();
+            // Only count devices with device_assignment_status (matches listing filter)
+            $records = Applecare_model::filter()
+                ->whereNotNull('device_assignment_status')
+                ->get();
             
             if ($records->isEmpty()) {
                 jsonView($data);
@@ -1097,7 +1100,7 @@ class Applecare_controller extends Module_controller
                     continue;
                 }
 
-                // Track all unique devices
+                // Track all unique devices (only those with device_assignment_status)
                 $allDevices[$serialNumber] = true;
 
                 $status = strtoupper(trim($record->status ?? ''));

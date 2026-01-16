@@ -3,7 +3,7 @@
         <div class="panel-heading" data-container="body">
             <h3 class="panel-title"><i class="fa fa-shield"></i>
                 <span data-i18n="applecare.widget_title"></span>
-				<span class="applecare_counter badge"></span>
+				<!-- <span class="applecare_counter badge"></span> -->
                 <list-link data-url="/show/listing/applecare/applecare"></list-link>
             </h3>
         </div>
@@ -33,7 +33,7 @@ $(document).on('appUpdate', function(e, lang) {
             baseUrl = appUrl + '/show/listing/applecare/applecare#';
         panel.empty();
 
-        $('#applecare-widget .applecare_counter').html(data.total_devices);
+        // $('#applecare-widget .applecare_counter').html(data.total_devices);
 
         // Set statuses - use regular links like other modules (green, yellow, red order)
         panel.append(' <a href="'+baseUrl+'status=ACTIVE" class="btn btn-success"><span class="bigger-150">'+data.active+'</span><br>'+i18n.t('applecare.active')+'</a>');
