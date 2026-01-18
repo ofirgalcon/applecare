@@ -25,6 +25,9 @@ class AddDeviceInfo extends Migration
             $table->string('wifi_mac_address', 255)->nullable()->after('added_to_org_date');
             $table->string('ethernet_mac_address', 255)->nullable()->after('wifi_mac_address');
             $table->string('bluetooth_mac_address', 255)->nullable()->after('ethernet_mac_address');
+            $table->dateTime('released_from_org_date')->nullable()->after('added_to_org_date');
+            $table->bigInteger('last_fetched')->nullable()->after('last_updated');
+            $table->boolean('sync_in_progress')->default(0)->after('last_fetched');
             
             // Indexes for common queries
             $table->index('device_assignment_status');
@@ -51,7 +54,10 @@ class AddDeviceInfo extends Migration
                 'added_to_org_date',
                 'wifi_mac_address',
                 'ethernet_mac_address',
-                'bluetooth_mac_address'
+                'bluetooth_mac_address',
+                'released_from_org_date',
+                'last_fetched',
+                'sync_in_progress'
             ]);
         });
     }
