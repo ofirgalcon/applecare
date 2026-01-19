@@ -31,7 +31,7 @@
         "bluetooth_mac_address": "Bluetooth MAC Address"
     },
     "device_info": {
-        "title": "Device Information"
+        "title": "AxM Device Information"
     },
     "coverage_info": {
         "title": "AppleCare Coverage"

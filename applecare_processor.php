@@ -61,7 +61,9 @@ class Applecare_processor extends Processor
                     } else {
                         $message = isset($result['message']) ? $result['message'] : 'Unknown error';
                         // Don't log "API not configured" - this is expected for devices without config
-                        if (strpos($message, 'AppleCare API not configured') === false) {
+                        // Don't log "SKIP (HTTP 404)" - this is expected for devices not found in Apple Business/School Manager
+                        if (strpos($message, 'AppleCare API not configured') === false && 
+                            strpos($message, 'SKIP (HTTP 404)') === false) {
                             error_log("AppleCare: Sync failed for {$this->serial_number}: $message");
                         }
                     }

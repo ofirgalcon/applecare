@@ -1297,18 +1297,16 @@ class Applecare_controller extends Module_controller
                 return;
             }
 
-            // Track unique devices in each category
-            $activeDevices = [];
-            $expiringSoonDevices = [];
-            $expiredDevices = [];
-            $inactiveDevices = [];
-            $allDevices = [];
-
             $now = new DateTime();
             $thirtyDays = clone $now;
             $thirtyDays->modify('+30 days');
 
-            // Loop through all records in the applecare table
+            // Group records by serial number and find the best (latest ending) active record per device
+            $deviceBestEndDate = [];  // serial_number => ['endDate' => DateTime|null, 'status' => string, 'isCanceled' => bool]
+            $allDevices = [];
+
+            // Loop through all records and keep track of the best record per device
+            // "Best" means: active with the latest end date
             foreach ($records as $record) {
                 $serialNumber = $record->serial_number;
                 
@@ -1316,39 +1314,103 @@ class Applecare_controller extends Module_controller
                     continue;
                 }
 
-                // Track all unique devices (only those with device_assignment_status)
+                // Track all unique devices
                 $allDevices[$serialNumber] = true;
 
                 $status = strtoupper(trim($record->status ?? ''));
                 $isCanceled = !empty($record->isCanceled);
+                $endDateTime = $record->endDateTime;
+                
+                // Parse end date
+                $endDate = null;
+                if (!empty($endDateTime)) {
+                    try {
+                        $endDate = new DateTime($endDateTime);
+                    } catch (\Exception $e) {
+                        // Invalid date - treat as no end date
+                    }
+                }
 
-                // Check if device is inactive
+                // Skip inactive/canceled records unless we have nothing better
+                $isActive = ($status === 'ACTIVE' && !$isCanceled);
+                
+                // Check if this record is better than what we have
+                if (!isset($deviceBestEndDate[$serialNumber])) {
+                    // First record for this device
+                    $deviceBestEndDate[$serialNumber] = [
+                        'endDate' => $endDate,
+                        'status' => $status,
+                        'isCanceled' => $isCanceled,
+                        'isActive' => $isActive
+                    ];
+                } else {
+                    $current = $deviceBestEndDate[$serialNumber];
+                    
+                    // Prefer active records over inactive
+                    if ($isActive && !$current['isActive']) {
+                        // This record is active, current is not - use this one
+                        $deviceBestEndDate[$serialNumber] = [
+                            'endDate' => $endDate,
+                            'status' => $status,
+                            'isCanceled' => $isCanceled,
+                            'isActive' => $isActive
+                        ];
+                    } elseif ($isActive && $current['isActive']) {
+                        // Both active - use the one with the later end date
+                        if ($endDate !== null && ($current['endDate'] === null || $endDate > $current['endDate'])) {
+                            $deviceBestEndDate[$serialNumber] = [
+                                'endDate' => $endDate,
+                                'status' => $status,
+                                'isCanceled' => $isCanceled,
+                                'isActive' => $isActive
+                            ];
+                        }
+                    } elseif (!$isActive && !$current['isActive']) {
+                        // Both inactive - use the one with the later end date (for expired tracking)
+                        if ($endDate !== null && ($current['endDate'] === null || $endDate > $current['endDate'])) {
+                            $deviceBestEndDate[$serialNumber] = [
+                                'endDate' => $endDate,
+                                'status' => $status,
+                                'isCanceled' => $isCanceled,
+                                'isActive' => $isActive
+                            ];
+                        }
+                    }
+                    // If current is active and this one is not, keep current
+                }
+            }
+
+            // Now categorize each device based on its best record
+            $activeDevices = [];
+            $expiringSoonDevices = [];
+            $expiredDevices = [];
+            $inactiveDevices = [];
+
+            foreach ($deviceBestEndDate as $serialNumber => $info) {
+                $endDate = $info['endDate'];
+                $status = $info['status'];
+                $isCanceled = $info['isCanceled'];
+                $isActive = $info['isActive'];
+
+                // Check if device is inactive (status INACTIVE, empty, or canceled)
                 if ($status === 'INACTIVE' || empty($status) || $isCanceled) {
                     $inactiveDevices[$serialNumber] = true;
                     continue;
                 }
 
                 // Check endDateTime for active/expired/expiring status
-                if (!empty($record->endDateTime)) {
-                    try {
-                        $endDate = new DateTime($record->endDateTime);
+                if ($endDate !== null) {
+                    if ($endDate > $now) {
+                        // Active coverage - end date is in the future
+                        $activeDevices[$serialNumber] = true;
 
-                        if ($endDate > $now) {
-                            // Active coverage - end date is in the future
-                            $activeDevices[$serialNumber] = true;
-
-                            // Check if expiring within 30 days
-                            if ($endDate <= $thirtyDays) {
-                                $expiringSoonDevices[$serialNumber] = true;
-                            }
-                        } else {
-                            // Expired - end date is in the past
-                            $expiredDevices[$serialNumber] = true;
+                        // Check if expiring within 30 days
+                        if ($endDate <= $thirtyDays) {
+                            $expiringSoonDevices[$serialNumber] = true;
                         }
-                    } catch (\Exception $e) {
-                        // Skip invalid dates - treat as inactive
-                        $inactiveDevices[$serialNumber] = true;
-                        continue;
+                    } else {
+                        // Expired - end date is in the past
+                        $expiredDevices[$serialNumber] = true;
                     }
                 } else {
                     // No endDateTime - check status
@@ -1377,30 +1439,17 @@ class Applecare_controller extends Module_controller
 
     /**
      * Get applecare information for serial_number
-     * Returns the first coverage record with device information merged
+     * Returns the coverage record with the latest end date
      *
      * @param string $serial serial number
      **/
     public function get_data($serial_number = '')
     {
-        // Priority logic:
-        // 1) Active records first
-        // 2) Among active: AppleCare+ > AppleCare Protection Plan > Limited Warranty
-        // 3) Among inactive: Prioritize renewable (isRenewable = true)
-        // 4) Among inactive non-renewable: Latest endDateTime
+        // Always return the record with the latest endDateTime
         $record = Applecare_model::select('applecare.*')
             ->whereSerialNumber($serial_number)
             ->filter()
-            ->orderByRaw("CASE WHEN status = 'ACTIVE' THEN 0 ELSE 1 END") // Active first
-            ->orderByRaw("CASE 
-                WHEN status = 'ACTIVE' AND description LIKE '%AppleCare+%' THEN 0 
-                WHEN status = 'ACTIVE' AND description LIKE '%AppleCare Protection Plan%' THEN 1 
-                WHEN status = 'ACTIVE' AND description LIKE '%Limited Warranty%' THEN 2 
-                WHEN status = 'ACTIVE' THEN 3
-                ELSE 999
-            END") // Priority for active: AppleCare+ > Protection Plan > Limited Warranty
-            ->orderByRaw("CASE WHEN status = 'INACTIVE' AND isRenewable = 1 THEN 0 WHEN status = 'INACTIVE' AND isRenewable = 0 THEN 1 ELSE 999 END") // Among inactive: renewable first
-            ->orderByRaw("CASE WHEN status = 'INACTIVE' AND isRenewable = 0 AND endDateTime IS NOT NULL THEN UNIX_TIMESTAMP(endDateTime) ELSE 0 END DESC") // Among inactive non-renewable: latest end date
+            ->orderByRaw("COALESCE(endDateTime, '1970-01-01') DESC") // Latest end date first
             ->first();
         
         if ($record) {

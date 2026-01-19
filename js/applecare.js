@@ -40,8 +40,8 @@ var format_applecare_enrolled_in_dep = function(colNumber, row){
 
 // Helper function to find end date in nearby columns
 var findEndDateInRow = function(colNumber, row) {
-    // Try known column offset first (endDateTime is typically 3 columns after status)
-    var endDateCol = $('td:eq('+(colNumber+3)+')', row);
+    // Try known column offset first (endDateTime is 6 columns after status based on applecare_listing.yml)
+    var endDateCol = $('td:eq('+(colNumber+6)+')', row);
     if (endDateCol.length) {
         var endDateText = endDateCol.text();
         if (endDateText && (/^\d{4}-\d{2}-\d{2}/.test(endDateText) || moment(endDateText).isValid())) {
@@ -49,8 +49,8 @@ var findEndDateInRow = function(colNumber, row) {
         }
     }
     
-    // Search nearby columns if not found
-    for (var i = colNumber + 1; i < colNumber + 6; i++) {
+    // Search nearby columns if not found (expanded range)
+    for (var i = colNumber + 1; i < colNumber + 8; i++) {
         var testCol = $('td:eq('+i+')', row);
         var testText = testCol.text();
         if (testText && (/^\d{4}-\d{2}-\d{2}/.test(testText) || moment(testText).isValid())) {
@@ -89,14 +89,14 @@ var format_applecare_status = function(colNumber, row){
         var rowData = oTable.row(row).data();
         var endDateText = null;
         
-        // endDateTime column index calculation:
-        // status=colNumber, device_assignment_status=colNumber+1, description=colNumber+2, 
-        // purchase_source_id=colNumber+3, startDateTime=colNumber+4, endDateTime=colNumber+5
-        if (rowData && Array.isArray(rowData) && rowData[colNumber + 5]) {
-            endDateText = rowData[colNumber + 5];
+        // endDateTime column index calculation (based on applecare_listing.yml):
+        // status=colNumber (3), device_assignment_status=+1, enrolled_in_dep=+2, description=+3, 
+        // purchase_source_id=+4, startDateTime=+5, endDateTime=+6
+        if (rowData && Array.isArray(rowData) && rowData[colNumber + 6]) {
+            endDateText = rowData[colNumber + 6];
         } else {
             // Fallback: try to get from DOM
-            var endDateCol = $('td:eq('+(colNumber+5)+')', row);
+            var endDateCol = $('td:eq('+(colNumber+6)+')', row);
             if (endDateCol.length) {
                 // Get the raw text first (before any formatting)
                 endDateText = endDateCol.text();
