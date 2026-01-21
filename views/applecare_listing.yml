@@ -10,10 +10,10 @@ table:
         i18n_header: serial
     -   column: reportdata.long_username
         i18n_header: username
-    -   column: applecare.status
-        i18n_header: applecare.column.status
-        formatter: format_applecare_status
-        filter: status_filter
+    -   column: applecare.coverage_status
+        i18n_header: applecare.column.coverage_status
+        formatter: format_applecare_coverage_status
+        filter: coverage_status_filter
     -   column: applecare.device_assignment_status
         i18n_header: applecare.column.device_assignment_status
         formatter: format_applecare_device_assignment_status
@@ -49,3 +49,7 @@ table:
     #     i18n_header: applecare.column.contractCancelDateTime
     -   column: applecare.agreementNumber
         i18n_header: applecare.column.agreementNumber
+    -   column: applecare.is_primary
+        i18n_header: applecare.column.is_primary
+        formatter: format_applecare_is_primary
+        filter: is_primary_filter

@@ -1,6 +1,7 @@
 <?php 
 
 use Symfony\Component\Yaml\Yaml;
+use Illuminate\Database\Capsule\Manager as Capsule;
 
 /**
  * applecare class
@@ -25,16 +26,11 @@ class Applecare_controller extends Module_controller
     private function getClientId($serial_number)
     {
         try {
-            $machine = new \Model();
-            $sql = "SELECT munkiinfo_value 
-                    FROM munkiinfo 
-                    WHERE serial_number = ? 
-                    AND munkiinfo_key = 'ClientIdentifier' 
-                    LIMIT 1";
-            $result = $machine->query($sql, [$serial_number]);
-            if (!empty($result) && isset($result[0])) {
-                return $result[0]->munkiinfo_value ?? null;
-            }
+            $result = Capsule::table('munkiinfo')
+                ->where('serial_number', $serial_number)
+                ->where('munkiinfo_key', 'ClientIdentifier')
+                ->value('munkiinfo_value');
+            return $result ?: null;
         } catch (\Exception $e) {
             // Silently fail - ClientID is optional
         }
@@ -52,18 +48,12 @@ class Applecare_controller extends Module_controller
     private function getMachineGroupKey($serial_number)
     {
         try {
-            $machine = new \Model();
-            // Get machine group key from munkireportinfo.passphrase
-            $sql = "SELECT passphrase 
-                    FROM munkireportinfo 
-                    WHERE serial_number = ? 
-                    AND passphrase IS NOT NULL 
-                    AND passphrase != ''
-                    LIMIT 1";
-            $result = $machine->query($sql, [$serial_number]);
-            if (!empty($result) && isset($result[0])) {
-                return $result[0]->passphrase ?? null;
-            }
+            $result = Capsule::table('munkireportinfo')
+                ->where('serial_number', $serial_number)
+                ->whereNotNull('passphrase')
+                ->where('passphrase', '!=', '')
+                ->value('passphrase');
+            return $result ?: null;
         } catch (\Exception $e) {
             // Silently fail - machine group key is optional
         }
@@ -493,7 +483,7 @@ class Applecare_controller extends Module_controller
 
         if ($http_code === 429) {
             // Extract Retry-After header if available
-            $retry_after = 60; // Default to 60 seconds
+            $retry_after = 30; // Default to 30 seconds
             if (preg_match('/Retry-After:\s*(\d+)/i', $headers, $matches)) {
                 $retry_after = (int)$matches[1];
             }
@@ -633,10 +623,10 @@ class Applecare_controller extends Module_controller
                             continue; // Retry
                         }
                     } elseif (preg_match('/HTTP 429/i', $e->getMessage())) {
-                        // HTTP 429 without retry-after header, wait 60 seconds
+                        // HTTP 429 without retry-after header, wait 30 seconds
                         if ($retry_count < $max_retries) {
-                            $outputCallback("Rate limit hit during token generation. Waiting 60s before retry ({$retry_count}/{$max_retries})...");
-                            sleep(60);
+                            $outputCallback("Rate limit hit during token generation. Waiting 30s before retry ({$retry_count}/{$max_retries})...");
+                            sleep(30);
                             continue; // Retry
                         }
                     }
@@ -659,19 +649,24 @@ class Applecare_controller extends Module_controller
         $outputCallback("Fetching device list from database...");
         
         try {
-            // Use Model class (like firmware/supported_os) instead of Eloquent model
-            // Eloquent models don't have the same query() method
-            $machine = new \Model();
+            // Use Eloquent Query Builder for device list
+            $query = Capsule::table('machine')
+                ->leftJoin('reportdata', 'machine.serial_number', '=', 'reportdata.serial_number')
+                ->select('machine.serial_number');
+            
+            // Apply machine group filter if applicable
             $filter = get_machine_group_filter();
-
-            $sql = "SELECT machine.serial_number
-                    FROM machine
-                    LEFT JOIN reportdata USING (serial_number)
-                    $filter";
+            if (!empty($filter)) {
+                // Extract the WHERE clause content (remove leading WHERE/AND)
+                $filter_condition = preg_replace('/^\s*(WHERE|AND)\s+/i', '', $filter);
+                if (!empty($filter_condition)) {
+                    $query->whereRaw($filter_condition);
+                }
+            }
 
             // Loop through each serial number for processing
             $devices = [];
-            foreach ($machine->query($sql) as $serialobj) {
+            foreach ($query->get() as $serialobj) {
                 $devices[] = $serialobj->serial_number;
             }
         } catch (\Exception $e) {
@@ -727,8 +722,10 @@ class Applecare_controller extends Module_controller
         $effective_rate_limit = (int)($default_rate_limit * 0.8);
         $outputCallback("Using 80% of rate limit ($effective_rate_limit calls/minute) to allow room for background updates");
         
-        // Calculate estimated time assuming 8 devices per minute
-        $devices_per_minute = 8;
+        // Calculate devices per minute based on rate limit
+        // Each device requires 2 API calls (device info + coverage)
+        $requests_per_device = 2;
+        $devices_per_minute = $effective_rate_limit / $requests_per_device;
         $estimated_minutes = ceil($total_devices / $devices_per_minute);
         $estimated_seconds = $estimated_minutes * 60;
         
@@ -740,14 +737,15 @@ class Applecare_controller extends Module_controller
         // Use the same sync logic as sync_serial but for all devices
         $device_index = 0;
         $last_heartbeat = time();
+        $current_device_retries = 0;
+        $max_device_retries = 3; // Max retries per device for 429 errors
         foreach ($devices as $serial) {
             $device_index++;
 
             // Skip invalid serials
             if (empty($serial) || strlen($serial) < 8) {
                 $skipped++;
-                // Update estimated time remaining (assuming 8 devices per minute)
-                $devices_per_minute = 8;
+                // Update estimated time remaining based on configured rate limit
                 $remaining_devices = $total_devices - $device_index;
                 if ($remaining_devices > 0) {
                     $estimated_seconds_remaining = ceil(($remaining_devices / $devices_per_minute) * 60);
@@ -765,8 +763,7 @@ class Applecare_controller extends Module_controller
                 $outputCallback("Heartbeat: Processing device $device_index of $total_devices...");
                 $last_heartbeat = $now;
                 
-                // Update estimated time remaining (assuming 8 devices per minute)
-                $devices_per_minute = 8;
+                // Update estimated time remaining based on configured rate limit
                 $remaining_devices = $total_devices - $device_index;
                 $estimated_seconds_remaining = ceil(($remaining_devices / $devices_per_minute) * 60);
                 $outputCallback("ESTIMATED_TIME:" . $estimated_seconds_remaining . ":" . $remaining_devices);
@@ -863,8 +860,7 @@ class Applecare_controller extends Module_controller
                     } else {
                         $outputCallback("SKIP (no config found)");
                         $skipped++;
-                        // Update estimated time remaining (assuming 8 devices per minute)
-                        $devices_per_minute = 8;
+                        // Update estimated time remaining based on configured rate limit
                         $remaining_devices = $total_devices - $device_index;
                         if ($remaining_devices > 0) {
                             $estimated_seconds_remaining = ceil(($remaining_devices / $devices_per_minute) * 60);
@@ -876,20 +872,33 @@ class Applecare_controller extends Module_controller
                     }
                 }
                 
-                // Handle rate limit (HTTP 429) - wait and retry
+                // Handle rate limit (HTTP 429) - wait and retry (with limit)
                 if (isset($result['retry_after']) && $result['retry_after'] > 0) {
-                    $wait_time = $result['retry_after'];
-                    $outputCallback("Rate limit hit. Waiting {$wait_time}s before continuing...");
-                    sleep($wait_time);
-                    // Clean up old timestamps after waiting (they're now expired)
-                    $now = time();
-                    $request_timestamps = array_filter($request_timestamps, function($timestamp) use ($now, $rate_limit_window) {
-                        return ($now - $timestamp) < $rate_limit_window;
-                    });
-                    // Retry this device
-                    $device_index--; // Decrement to retry same device
-                    continue;
+                    $current_device_retries++;
+                    
+                    if ($current_device_retries <= $max_device_retries) {
+                        $wait_time = $result['retry_after'];
+                        $outputCallback("Rate limit hit (attempt {$current_device_retries}/{$max_device_retries}). Waiting {$wait_time}s before retrying...");
+                        sleep($wait_time);
+                        // Clean up old timestamps after waiting (they're now expired)
+                        $now = time();
+                        $request_timestamps = array_filter($request_timestamps, function($timestamp) use ($now, $rate_limit_window) {
+                            return ($now - $timestamp) < $rate_limit_window;
+                        });
+                        // Retry this device
+                        $device_index--; // Decrement to retry same device
+                        continue;
+                    } else {
+                        // Max retries exceeded for this device - skip it
+                        $outputCallback("Rate limit hit - max retries ({$max_device_retries}) exceeded. Skipping device.");
+                        $skipped++;
+                        $current_device_retries = 0; // Reset for next device
+                        continue;
+                    }
                 }
+                
+                // Reset retry counter on successful request (no 429)
+                $current_device_retries = 0;
                 
                 // Track requests AFTER they're made
                 // Count ALL API calls that were made - they all consume rate limit quota
@@ -940,8 +949,7 @@ class Applecare_controller extends Module_controller
                     }
                 }
                 
-                // Update estimated time remaining after each device (assuming 8 devices per minute)
-                $devices_per_minute = 8;
+                // Update estimated time remaining based on configured rate limit
                 $remaining_devices = $total_devices - $device_index;
                 if ($remaining_devices > 0) {
                     $estimated_seconds_remaining = ceil(($remaining_devices / $devices_per_minute) * 60);
@@ -1032,7 +1040,6 @@ class Applecare_controller extends Module_controller
             try {
                 // Get distinct purchase_source_id values and translate them to names
                 // Count distinct devices per reseller (one device counted once even if it has multiple coverage records)
-                $model = new \Model();
                 $filter = get_machine_group_filter('WHERE', 'reportdata');
                 
                 // Build WHERE clause - use AND if filter already has WHERE, otherwise use WHERE
@@ -1053,7 +1060,7 @@ class Applecare_controller extends Module_controller
 
                 // Aggregate by purchase_source_id
                 $temp_results = [];
-                $results = $model->query($sql);
+                $results = Capsule::select($sql);
                 foreach ($results as $obj) {
                     if (!empty($obj->purchase_source_id)) {
                         $resellerId = $obj->purchase_source_id;
@@ -1099,8 +1106,6 @@ class Applecare_controller extends Module_controller
 
         // Handle device_assignment_status specially - need to check released_from_org_date too
         if ($column === 'device_assignment_status') {
-            // Use Model class for raw SQL queries (like other methods in this controller)
-            $model = new \Model();
             $filter = get_machine_group_filter('WHERE', 'reportdata');
             
             // Get one value per device (using MAX to handle cases where device has multiple records)
@@ -1125,7 +1130,7 @@ class Applecare_controller extends Module_controller
 
             // Now aggregate by status
             $temp_results = [];
-            foreach ($model->query($sql) as $obj) {
+            foreach (Capsule::select($sql) as $obj) {
                 $status = strtoupper($obj->status);
                 if (!isset($temp_results[$status])) {
                     $temp_results[$status] = 0;
@@ -1163,7 +1168,6 @@ class Applecare_controller extends Module_controller
         // Handle enrolled_in_dep from mdm_status table
         if ($column === 'enrolled_in_dep') {
             try {
-                $model = new \Model();
                 $filter = get_machine_group_filter('WHERE', 'reportdata');
                 
                 // Build WHERE clause - use AND if filter already has WHERE, otherwise use WHERE
@@ -1188,7 +1192,7 @@ class Applecare_controller extends Module_controller
                         ORDER BY count DESC";
 
                 $results = [];
-                foreach ($model->query($sql) as $obj) {
+                foreach (Capsule::select($sql) as $obj) {
                     $results[] = [
                         'label' => (string)$obj->label,
                         'count' => (int)$obj->count
@@ -1273,7 +1277,7 @@ class Applecare_controller extends Module_controller
 
     /**
      * Get AppleCare statistics for dashboard widget
-     * Loops through applecare table and totals unique devices by status
+     * Counts DEVICES by their coverage_status (computed when is_primary is set)
      */
     public function get_stats()
     {
@@ -1282,155 +1286,23 @@ class Applecare_controller extends Module_controller
             'active' => 0,
             'inactive' => 0,
             'expiring_soon' => 0,
-            'expired' => 0,
         ];
 
         try {
-            // Get all records from applecare table
-            // Only count devices with device_assignment_status (matches listing filter)
-            $records = Applecare_model::filter()
+            // Count by coverage_status using simple GROUP BY query
+            $counts = Applecare_model::filter()
                 ->whereNotNull('device_assignment_status')
-                ->get();
+                ->where('is_primary', 1)
+                ->selectRaw('coverage_status, COUNT(*) as count')
+                ->groupBy('coverage_status')
+                ->pluck('count', 'coverage_status');
             
-            if ($records->isEmpty()) {
-                jsonView($data);
-                return;
-            }
-
-            $now = new DateTime();
-            $thirtyDays = clone $now;
-            $thirtyDays->modify('+30 days');
-
-            // Group records by serial number and find the best (latest ending) active record per device
-            $deviceBestEndDate = [];  // serial_number => ['endDate' => DateTime|null, 'status' => string, 'isCanceled' => bool]
-            $allDevices = [];
-
-            // Loop through all records and keep track of the best record per device
-            // "Best" means: active with the latest end date
-            foreach ($records as $record) {
-                $serialNumber = $record->serial_number;
-                
-                if (empty($serialNumber)) {
-                    continue;
-                }
-
-                // Track all unique devices
-                $allDevices[$serialNumber] = true;
-
-                $status = strtoupper(trim($record->status ?? ''));
-                $isCanceled = !empty($record->isCanceled);
-                $endDateTime = $record->endDateTime;
-                
-                // Parse end date
-                $endDate = null;
-                if (!empty($endDateTime)) {
-                    try {
-                        $endDate = new DateTime($endDateTime);
-                    } catch (\Exception $e) {
-                        // Invalid date - treat as no end date
-                    }
-                }
-
-                // Skip inactive/canceled records unless we have nothing better
-                $isActive = ($status === 'ACTIVE' && !$isCanceled);
-                
-                // Check if this record is better than what we have
-                if (!isset($deviceBestEndDate[$serialNumber])) {
-                    // First record for this device
-                    $deviceBestEndDate[$serialNumber] = [
-                        'endDate' => $endDate,
-                        'status' => $status,
-                        'isCanceled' => $isCanceled,
-                        'isActive' => $isActive
-                    ];
-                } else {
-                    $current = $deviceBestEndDate[$serialNumber];
-                    
-                    // Prefer active records over inactive
-                    if ($isActive && !$current['isActive']) {
-                        // This record is active, current is not - use this one
-                        $deviceBestEndDate[$serialNumber] = [
-                            'endDate' => $endDate,
-                            'status' => $status,
-                            'isCanceled' => $isCanceled,
-                            'isActive' => $isActive
-                        ];
-                    } elseif ($isActive && $current['isActive']) {
-                        // Both active - use the one with the later end date
-                        if ($endDate !== null && ($current['endDate'] === null || $endDate > $current['endDate'])) {
-                            $deviceBestEndDate[$serialNumber] = [
-                                'endDate' => $endDate,
-                                'status' => $status,
-                                'isCanceled' => $isCanceled,
-                                'isActive' => $isActive
-                            ];
-                        }
-                    } elseif (!$isActive && !$current['isActive']) {
-                        // Both inactive - use the one with the later end date (for expired tracking)
-                        if ($endDate !== null && ($current['endDate'] === null || $endDate > $current['endDate'])) {
-                            $deviceBestEndDate[$serialNumber] = [
-                                'endDate' => $endDate,
-                                'status' => $status,
-                                'isCanceled' => $isCanceled,
-                                'isActive' => $isActive
-                            ];
-                        }
-                    }
-                    // If current is active and this one is not, keep current
-                }
-            }
-
-            // Now categorize each device based on its best record
-            $activeDevices = [];
-            $expiringSoonDevices = [];
-            $expiredDevices = [];
-            $inactiveDevices = [];
-
-            foreach ($deviceBestEndDate as $serialNumber => $info) {
-                $endDate = $info['endDate'];
-                $status = $info['status'];
-                $isCanceled = $info['isCanceled'];
-                $isActive = $info['isActive'];
-
-                // Check if device is inactive (status INACTIVE, empty, or canceled)
-                if ($status === 'INACTIVE' || empty($status) || $isCanceled) {
-                    $inactiveDevices[$serialNumber] = true;
-                    continue;
-                }
-
-                // Check endDateTime for active/expired/expiring status
-                if ($endDate !== null) {
-                    if ($endDate > $now) {
-                        // Active coverage - end date is in the future
-                        $activeDevices[$serialNumber] = true;
-
-                        // Check if expiring within 30 days
-                        if ($endDate <= $thirtyDays) {
-                            $expiringSoonDevices[$serialNumber] = true;
-                        }
-                    } else {
-                        // Expired - end date is in the past
-                        $expiredDevices[$serialNumber] = true;
-                    }
-                } else {
-                    // No endDateTime - check status
-                    if ($status === 'ACTIVE') {
-                        $activeDevices[$serialNumber] = true;
-                    } else {
-                        $inactiveDevices[$serialNumber] = true;
-                    }
-                }
-            }
-
-            // Count unique devices in each category
-            $data['total_devices'] = count($allDevices);
-            $data['active'] = count($activeDevices);
-            $data['expiring_soon'] = count($expiringSoonDevices);
-            $data['expired'] = count($expiredDevices);
-            $data['inactive'] = count($inactiveDevices);
+            $data['active'] = $counts->get('active', 0);
+            $data['expiring_soon'] = $counts->get('expiring_soon', 0);
+            $data['inactive'] = $counts->get('inactive', 0);
+            $data['total_devices'] = $data['active'] + $data['expiring_soon'] + $data['inactive'];
 
         } catch (\Throwable $e) {
-            // Return zeros on error
             error_log('AppleCare get_stats error: ' . $e->getMessage());
         }
 
@@ -1439,18 +1311,27 @@ class Applecare_controller extends Module_controller
 
     /**
      * Get applecare information for serial_number
-     * Returns the coverage record with the latest end date
+     * Returns the primary plan (is_primary=1), or falls back to latest end date if not set
      *
      * @param string $serial serial number
      **/
     public function get_data($serial_number = '')
     {
-        // Always return the record with the latest endDateTime
+        // First try to get the primary plan (is_primary=1)
         $record = Applecare_model::select('applecare.*')
             ->whereSerialNumber($serial_number)
             ->filter()
-            ->orderByRaw("COALESCE(endDateTime, '1970-01-01') DESC") // Latest end date first
+            ->where('is_primary', 1)
             ->first();
+        
+        // Fallback to latest end date if no primary plan found (for records before migration)
+        if (!$record) {
+            $record = Applecare_model::select('applecare.*')
+                ->whereSerialNumber($serial_number)
+                ->filter()
+                ->orderByRaw("COALESCE(endDateTime, '1970-01-01') DESC")
+                ->first();
+        }
         
         if ($record) {
             $data = $record->toArray();
@@ -1476,16 +1357,95 @@ class Applecare_controller extends Module_controller
             }
             
             // Get enrolled_in_dep from mdm_status table
-            $model = new \Model();
-            $sql = "SELECT enrolled_in_dep FROM mdm_status WHERE serial_number = ? LIMIT 1";
-            $result = $model->query($sql, [$serial_number]);
-            if (!empty($result) && isset($result[0]->enrolled_in_dep)) {
-                $data['enrolled_in_dep'] = $result[0]->enrolled_in_dep;
+            $enrolled_in_dep = Capsule::table('mdm_status')
+                ->where('serial_number', $serial_number)
+                ->value('enrolled_in_dep');
+            if ($enrolled_in_dep !== null) {
+                $data['enrolled_in_dep'] = $enrolled_in_dep;
             }
             
             jsonView($data);
         } else {
             jsonView([]);
+        }
+    }
+
+    /**
+     * Recalculate is_primary and coverage_status for all devices
+     * URL: /module/applecare/recalculate_primary
+     * 
+     * @return void JSON response with count of updated devices
+     */
+    public function recalculate_primary()
+    {
+        try {
+            $now = date('Y-m-d');
+            $thirtyDays = date('Y-m-d', strtotime('+30 days'));
+            
+            // Get all unique serial numbers
+            $serials = Capsule::table('applecare')
+                ->distinct()
+                ->whereNotNull('serial_number')
+                ->pluck('serial_number');
+            
+            $updated = 0;
+            foreach ($serials as $serial) {
+                if (empty($serial)) {
+                    continue;
+                }
+                
+                // Reset all plans for this device
+                Capsule::table('applecare')
+                    ->where('serial_number', $serial)
+                    ->update(['is_primary' => 0, 'coverage_status' => null]);
+                
+                // Get all plans for this device, sorted by end date desc (latest first)
+                $plans = Capsule::table('applecare')
+                    ->where('serial_number', $serial)
+                    ->orderByRaw("COALESCE(endDateTime, '1970-01-01') DESC")
+                    ->get();
+                
+                if ($plans->isEmpty()) {
+                    continue;
+                }
+                
+                // Pick the first one (latest end date)
+                $primary = $plans->first();
+                
+                // Determine coverage status
+                $status = strtoupper($primary->status ?? '');
+                $isCanceled = !empty($primary->isCanceled);
+                $endDate = $primary->endDateTime;
+                
+                // Check if plan is active
+                $isActive = $status === 'ACTIVE' 
+                    && !$isCanceled 
+                    && !empty($endDate) 
+                    && $endDate >= $now;
+                
+                if ($isActive) {
+                    $coverageStatus = ($endDate <= $thirtyDays) ? 'expiring_soon' : 'active';
+                } else {
+                    $coverageStatus = 'inactive';
+                }
+                
+                // Update the primary plan
+                Capsule::table('applecare')
+                    ->where('id', $primary->id)
+                    ->update(['is_primary' => 1, 'coverage_status' => $coverageStatus]);
+                
+                $updated++;
+            }
+            
+            jsonView([
+                'success' => true,
+                'message' => "Recalculated is_primary and coverage_status for {$updated} devices"
+            ]);
+        } catch (\Exception $e) {
+            jsonView([
+                'success' => false,
+                'error' => $e->getMessage()
+            ]);
         }
     }
 
@@ -1497,6 +1457,9 @@ class Applecare_controller extends Module_controller
      **/
     public function get_admin_data()
     {
+        // Get actual PHP max_execution_time (0 means unlimited)
+        $max_execution_time = (int)ini_get('max_execution_time');
+        
         $data = [
             'api_url_configured' => false,
             'client_assertion_configured' => false,
@@ -1504,6 +1467,7 @@ class Applecare_controller extends Module_controller
             'default_api_url' => getenv('APPLECARE_API_URL') ?: '',
             'default_client_assertion' => getenv('APPLECARE_CLIENT_ASSERTION') ? 'Yes' : 'No',
             'default_rate_limit' => getenv('APPLECARE_RATE_LIMIT') ?: '20',
+            'max_execution_time' => $max_execution_time,
         ];
         
         // Check if default config is set
@@ -1589,18 +1553,24 @@ class Applecare_controller extends Module_controller
         $excludeExisting = isset($_GET['exclude_existing']) && $_GET['exclude_existing'] === '1';
         
         try {
-            // Use Model class (like firmware/supported_os) instead of Eloquent model
-            $machine = new \Model();
+            // Use Eloquent Query Builder for device list
+            $query = Capsule::table('machine')
+                ->leftJoin('reportdata', 'machine.serial_number', '=', 'reportdata.serial_number')
+                ->select('machine.serial_number');
+            
+            // Apply machine group filter if applicable
             $filter = get_machine_group_filter();
-
-            $sql = "SELECT machine.serial_number
-                    FROM machine
-                    LEFT JOIN reportdata USING (serial_number)
-                    $filter";
+            if (!empty($filter)) {
+                // Extract the WHERE clause content (remove leading WHERE/AND)
+                $filter_condition = preg_replace('/^\s*(WHERE|AND)\s+/i', '', $filter);
+                if (!empty($filter_condition)) {
+                    $query->whereRaw($filter_condition);
+                }
+            }
 
             // Loop through each serial number for processing
             $devices = [];
-            foreach ($machine->query($sql) as $serialobj) {
+            foreach ($query->get() as $serialobj) {
                 $devices[] = $serialobj->serial_number;
             }
 

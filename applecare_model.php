@@ -7,6 +7,10 @@ class Applecare_model extends Eloquent
 {
     protected $table = 'applecare';
 
+    // Primary key is a string (API ID like "TW1C6LYF46"), not auto-incrementing integer
+    protected $keyType = 'string';
+    public $incrementing = false;
+
     protected $hidden = ['id', 'serial_number'];
 
     protected $fillable = [
@@ -40,6 +44,8 @@ class Applecare_model extends Eloquent
         'last_updated',
         'last_fetched',
         'sync_in_progress',
+        'is_primary',
+        'coverage_status',
     ];
 
     /**

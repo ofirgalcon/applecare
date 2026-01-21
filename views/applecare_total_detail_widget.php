@@ -33,12 +33,21 @@ $(document).on('appUpdate', function(e, lang) {
             baseUrl = appUrl + '/show/listing/applecare/applecare#';
         panel.empty();
 
-        // $('#applecare-widget .applecare_counter').html(data.total_devices);
-
-        // Set statuses - use regular links like other modules (green, yellow, red order)
-        panel.append(' <a href="'+baseUrl+'status=ACTIVE" class="btn btn-success"><span class="bigger-150">'+data.active+'</span><br>'+i18n.t('applecare.active')+'</a>');
+        // Active: is_primary=1 and coverage_status=active
+        var activeLink = $('<a>')
+            .attr('href', baseUrl + 'is_primary=1&coverage_status=active')
+            .addClass('btn btn-success')
+            .attr('title', i18n.t('applecare.active_tooltip'))
+            .attr('data-toggle', 'tooltip')
+            .attr('data-placement', 'top')
+            .append($('<span>').addClass('bigger-150').text(data.active))
+            .append('<br>')
+            .append(document.createTextNode(i18n.t('applecare.active')));
+        panel.append(activeLink);
+        
+        // Expiring Soon: is_primary=1 and coverage_status=expiring_soon
         var expiringLink = $('<a>')
-            .attr('href', baseUrl+'expiring=1')
+            .attr('href', baseUrl + 'is_primary=1&coverage_status=expiring_soon')
             .addClass('btn btn-warning')
             .attr('title', i18n.t('applecare.expiring_soon_tooltip'))
             .attr('data-toggle', 'tooltip')
@@ -47,7 +56,18 @@ $(document).on('appUpdate', function(e, lang) {
             .append('<br>')
             .append(document.createTextNode(i18n.t('applecare.expiring_soon')));
         panel.append(expiringLink);
-        panel.append(' <a href="'+baseUrl+'status=INACTIVE" class="btn btn-danger"><span class="bigger-150">'+data.inactive+'</span><br>'+i18n.t('applecare.inactive')+'</a>');
+        
+        // Inactive/Expired: is_primary=1 and coverage_status=inactive
+        var inactiveLink = $('<a>')
+            .attr('href', baseUrl + 'is_primary=1&coverage_status=inactive')
+            .addClass('btn btn-danger')
+            .attr('title', i18n.t('applecare.inactive_tooltip'))
+            .attr('data-toggle', 'tooltip')
+            .attr('data-placement', 'top')
+            .append($('<span>').addClass('bigger-150').text(data.inactive))
+            .append('<br>')
+            .append(document.createTextNode(i18n.t('applecare.inactive')));
+        panel.append(inactiveLink);
         
         // Initialize tooltips
         panel.find('[data-toggle="tooltip"]').tooltip();

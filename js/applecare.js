@@ -38,28 +38,6 @@ var format_applecare_enrolled_in_dep = function(colNumber, row){
     formatBooleanLabel(col, value, 'success', 'danger');
 }
 
-// Helper function to find end date in nearby columns
-var findEndDateInRow = function(colNumber, row) {
-    // Try known column offset first (endDateTime is 6 columns after status based on applecare_listing.yml)
-    var endDateCol = $('td:eq('+(colNumber+6)+')', row);
-    if (endDateCol.length) {
-        var endDateText = endDateCol.text();
-        if (endDateText && (/^\d{4}-\d{2}-\d{2}/.test(endDateText) || moment(endDateText).isValid())) {
-            return endDateText;
-        }
-    }
-    
-    // Search nearby columns if not found (expanded range)
-    for (var i = colNumber + 1; i < colNumber + 8; i++) {
-        var testCol = $('td:eq('+i+')', row);
-        var testText = testCol.text();
-        if (testText && (/^\d{4}-\d{2}-\d{2}/.test(testText) || moment(testText).isValid())) {
-            return testText;
-        }
-    }
-    return null;
-}
-
 // Helper function to parse date with fallbacks
 var parseDateWithFallbacks = function(dateText) {
     if (!dateText) return null;
@@ -75,86 +53,6 @@ var parseDateWithFallbacks = function(dateText) {
     }
     
     return parsedDate.isValid() ? parsedDate : null;
-}
-
-var format_applecare_status = function(colNumber, row){
-    var col = $('td:eq('+colNumber+')', row),
-        status = col.text();
-    var statusUpper = String(status).toUpperCase();
-    var statusDisplay = status.charAt(0).toUpperCase() + status.slice(1).toLowerCase();
-    
-    if (statusUpper === 'ACTIVE') {
-        // Try to get endDateTime from DataTables raw data first
-        var oTable = $('.table').DataTable();
-        var rowData = oTable.row(row).data();
-        var endDateText = null;
-        
-        // endDateTime column index calculation (based on applecare_listing.yml):
-        // status=colNumber (3), device_assignment_status=+1, enrolled_in_dep=+2, description=+3, 
-        // purchase_source_id=+4, startDateTime=+5, endDateTime=+6
-        if (rowData && Array.isArray(rowData) && rowData[colNumber + 6]) {
-            endDateText = rowData[colNumber + 6];
-        } else {
-            // Fallback: try to get from DOM
-            var endDateCol = $('td:eq('+(colNumber+6)+')', row);
-            if (endDateCol.length) {
-                // Get the raw text first (before any formatting)
-                endDateText = endDateCol.text();
-                
-                // If it's already formatted (has HTML), try to get from title attribute
-                if (endDateCol.html() !== endDateText) {
-                    var titleAttr = endDateCol.find('span[title]').attr('title');
-                    if (titleAttr) {
-                        // Title contains full date in 'llll' format, parse it
-                        var titleDate = moment(titleAttr);
-                        if (titleDate.isValid()) {
-                            endDateText = titleDate.format('YYYY-MM-DD');
-                        }
-                    }
-                }
-            }
-            
-            // Final fallback to findEndDateInRow
-            if (!endDateText || !endDateText.trim()) {
-                endDateText = findEndDateInRow(colNumber, row);
-            }
-        }
-        
-        var labelClass = 'label-success';
-        var tooltipText = '';
-        var displayText = statusDisplay;
-        
-        // Check if end date is less than 31 days away
-        if (endDateText && endDateText.trim()) {
-            var parsedEndDate = parseDateWithFallbacks(endDateText);
-            if (parsedEndDate && parsedEndDate.isValid()) {
-                var daysUntil = parsedEndDate.diff(moment(), 'days');
-                if (daysUntil >= 0 && daysUntil < 31) {
-                    labelClass = 'label-warning';
-                    displayText = (typeof i18n !== 'undefined' && i18n.t) ? i18n.t('applecare.expiring_soon') : 'Expiring Soon';
-                    tooltipText = 'Coverage expires in ' + daysUntil + ' day' + (daysUntil !== 1 ? 's' : '');
-                }
-            }
-        }
-        
-        // Build HTML string directly (more reliable than mr.label() which has a bug in core)
-        var statusHtml = '<span class="label ' + labelClass + '"';
-        if (tooltipText) {
-            statusHtml += ' title="' + tooltipText.replace(/"/g, '&quot;') + '" data-toggle="tooltip"';
-        }
-        statusHtml += '>' + displayText.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</span>';
-        col.html(statusHtml);
-        if (tooltipText) {
-            col.find('[data-toggle="tooltip"]').tooltip();
-        }
-    } else if (statusUpper === 'INACTIVE') {
-        // Display as "Expired" but keep API value as "INACTIVE"
-        // Build HTML string directly (same pattern as detail widget)
-        var inactiveText = i18n.t('applecare.inactive').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        col.html('<span class="label label-danger">' + inactiveText + '</span>');
-    } else {
-        col.text(status);
-    }
 }
 
 // Helper function to format date with locale-aware formatting
@@ -212,14 +110,88 @@ var filter_boolean_no = function(colNumber, d) {
     d.search.value = '';
 }
 
-// Filter functions for column filters
-var status_filter = function(colNumber, d) {
+// Coverage status formatter - displays the computed coverage status
+var format_applecare_coverage_status = function(colNumber, row) {
+    var col = $('td:eq('+colNumber+')', row),
+        status = col.text();
+    
+    if (!status || status.trim() === '') {
+        col.html('');
+        return;
+    }
+    
+    var statusLower = String(status).toLowerCase();
+    var labelClass = 'label-default';
+    var displayText = status;
+    var tooltipText = '';
+    
+    if (statusLower === 'active') {
+        labelClass = 'label-success';
+        displayText = i18n.t('applecare.active');
+    } else if (statusLower === 'expiring_soon') {
+        labelClass = 'label-warning';
+        displayText = i18n.t('applecare.expiring_soon');
+        // Try to get days until expiry from endDateTime column
+        var oTable = $('.table').DataTable();
+        var rowData = oTable.row(row).data();
+        // endDateTime is at index 8 (based on updated yml: coverage_status=3, device_assignment=4, enrolled=5, desc=6, reseller=7, start=8, end=9)
+        if (rowData && Array.isArray(rowData) && rowData[9]) {
+            var endDate = moment(rowData[9]);
+            if (endDate.isValid()) {
+                var daysUntil = endDate.diff(moment().startOf('day'), 'days');
+                if (daysUntil >= 0) {
+                    tooltipText = 'Coverage expires in ' + daysUntil + ' day' + (daysUntil !== 1 ? 's' : '');
+                }
+            }
+        }
+    } else if (statusLower === 'inactive') {
+        labelClass = 'label-danger';
+        displayText = i18n.t('applecare.expired');
+    }
+    
+    var statusHtml = '<span class="label ' + labelClass + '"';
+    if (tooltipText) {
+        statusHtml += ' title="' + tooltipText.replace(/"/g, '&quot;') + '" data-toggle="tooltip"';
+    }
+    statusHtml += '>' + displayText.replace(/</g, '&lt;').replace(/>/g, '&gt;') + '</span>';
+    col.html(statusHtml);
+    if (tooltipText) {
+        col.find('[data-toggle="tooltip"]').tooltip();
+    }
+}
+
+// Coverage status filter
+var coverage_status_filter = function(colNumber, d) {
     if(d.search.value.match(/^active$/i)) {
-        d.columns[colNumber].search.value = 'ACTIVE';
+        d.columns[colNumber].search.value = 'active';
+        d.search.value = '';
+    }
+    if(d.search.value.match(/^expiring_soon$/i)) {
+        d.columns[colNumber].search.value = 'expiring_soon';
         d.search.value = '';
     }
     if(d.search.value.match(/^(inactive|expired)$/i)) {
-        d.columns[colNumber].search.value = 'INACTIVE';
+        d.columns[colNumber].search.value = 'inactive';
+        d.search.value = '';
+    }
+}
+
+// is_primary formatter - shows Yes/No or hides the value
+var format_applecare_is_primary = function(colNumber, row) {
+    var col = $('td:eq('+colNumber+')', row),
+        value = col.text();
+    var isYes = (value == '1' || value == 'true' || value === true);
+    col.html(isYes ? '<span class="label label-info">Primary</span>' : '');
+}
+
+// is_primary filter
+var is_primary_filter = function(colNumber, d) {
+    if(d.search.value.match(/^(primary|is_primary=1|1)$/i)) {
+        d.columns[colNumber].search.value = '= 1';
+        d.search.value = '';
+    }
+    if(d.search.value.match(/^(not_primary|is_primary=0|0)$/i)) {
+        d.columns[colNumber].search.value = '= 0';
         d.search.value = '';
     }
 }
@@ -442,13 +414,16 @@ var enrolled_in_dep_filter = function(colNumber, d) {
 }
 
 // Export filter functions to global scope (required for YAML configs)
-window.status_filter = status_filter;
 window.paymentType_filter = paymentType_filter;
 window.isRenewable_filter = isRenewable_filter;
 window.isCanceled_filter = isCanceled_filter;
 window.device_assignment_status_filter = device_assignment_status_filter;
 window.reseller_filter = reseller_filter;
 window.enrolled_in_dep_filter = enrolled_in_dep_filter;
+window.coverage_status_filter = coverage_status_filter;
+window.format_applecare_coverage_status = format_applecare_coverage_status;
+window.is_primary_filter = is_primary_filter;
+window.format_applecare_is_primary = format_applecare_is_primary;
 
 // Parse hash parameters for filtering
 var applecareHashParams = {};
@@ -468,6 +443,7 @@ function parseApplecareHash() {
         });
     }
 }
+
 
 // Clear search state when navigating to the listing without a hash
 // This prevents stale widget searches from persisting between navigations
@@ -621,48 +597,25 @@ function wrapApplecareFilter() {
                 d.where = [];
             }
         
-        // Apply hash filters using where clause (supports date comparisons)
-        if (applecareHashParams.expired === '1') {
-            // Expired: endDateTime <= today (end date is in the past or today)
-            // This matches the controller logic: $endDate <= $now
-            // Use < tomorrow 00:00:00 to include today
-            var tomorrow = moment().add(1, 'days').format('YYYY-MM-DD');
-            var expiredValue = tomorrow + ' 00:00:00';
+        // Apply is_primary filter using WHERE clause (more reliable than column search)
+        if (applecareHashParams.is_primary === '1') {
             d.where.push({
                 table: 'applecare',
-                column: 'endDateTime',
-                operator: '<',
-                value: expiredValue
+                column: 'is_primary',
+                operator: '=',
+                value: '1'
             });
         }
         
-        if (applecareHashParams.expiring === '1') {
-            // Expiring soon: endDateTime >= today AND endDateTime <= 30 days from now AND status = ACTIVE
-            // >= today means > yesterday 23:59:59
-            var yesterday = moment().subtract(1, 'days').format('YYYY-MM-DD');
+        // Apply coverage_status filter using WHERE clause
+        if (applecareHashParams.coverage_status) {
             d.where.push({
                 table: 'applecare',
-                column: 'endDateTime',
-                operator: '>',
-                value: yesterday + ' 23:59:59'
+                column: 'coverage_status',
+                operator: '=',
+                value: applecareHashParams.coverage_status
             });
-            
-            // <= 30 days means < day after 30 days
-            var dayAfter = moment().add(31, 'days').format('YYYY-MM-DD');
-            d.where.push({
-                table: 'applecare',
-                column: 'endDateTime',
-                operator: '<',
-                value: dayAfter + ' 00:00:00'
-            });
-            
-            // Also filter by status = ACTIVE (exact match, no regex)
-            $.each(d.columns, function(index, item){
-                if(item.name === 'applecare.status'){
-                    d.columns[index].search.value = 'ACTIVE';
-                    d.columns[index].search.regex = false;
-                }
-            });
+            d.search.value = '';
         }
         
         if (applecareHashParams.status) {
@@ -713,19 +666,24 @@ function wrapApplecareFilter() {
         }
         
         if (applecareHashParams.enrolled_in_dep !== undefined && applecareHashParams.enrolled_in_dep !== null) {
-            var found = false;
-            $.each(d.columns, function(index, item){
-                if(item.name === 'mdm_status.enrolled_in_dep'){
-                    // Use = 1 or = 0 format like other modules (boolean fields)
-                    d.columns[index].search.value = '= ' + applecareHashParams.enrolled_in_dep;
-                    d.columns[index].search.regex = false;
-                    found = true;
-                }
+            d.where.push({
+                table: 'mdm_status',
+                column: 'enrolled_in_dep',
+                operator: '=',
+                value: applecareHashParams.enrolled_in_dep
             });
-            if (found) {
-                // Clear global search when column search is set
-                d.search.value = '';
-            }
+            d.search.value = '';
+        }
+        
+        // Apply device_assignment_status filter using WHERE clause
+        if (applecareHashParams.device_assignment_status) {
+            d.where.push({
+                table: 'applecare',
+                column: 'device_assignment_status',
+                operator: '=',
+                value: applecareHashParams.device_assignment_status.toUpperCase()
+            });
+            d.search.value = '';
         }
         };
         // Mark as wrapped to prevent multiple wraps
@@ -740,6 +698,31 @@ wrapApplecareFilter();
 $(document).ready(function() {
     wrapApplecareFilter();
 });
+
+// Helper to reload table when DataTable is ready
+function reloadTableWhenReady() {
+    var checkTable = setInterval(function() {
+        try {
+            if ($.fn.dataTable.isDataTable('.table')) {
+                var oTable = $('.table').DataTable();
+                if (oTable && oTable.ajax) {
+                    clearInterval(checkTable);
+                    // Small delay to ensure everything is ready
+                    setTimeout(function() {
+                        oTable.ajax.reload();
+                    }, 100);
+                }
+            }
+        } catch(e) {
+            // DataTable not ready yet, continue checking
+        }
+    }, 100);
+
+    // Stop checking after 5 seconds
+    setTimeout(function() {
+        clearInterval(checkTable);
+    }, 5000);
+}
 
 // Handle hash on initial page load and hash changes
 $(document).on('appReady', function(e, lang) {
@@ -768,28 +751,7 @@ $(document).on('appReady', function(e, lang) {
 
     // Apply hash filters if hash is present
     if ($('.table').length > 0 && Object.keys(applecareHashParams).length > 0) {
-        // Wait for DataTable to be fully initialized
-        var checkTable = setInterval(function() {
-            try {
-                if ($.fn.dataTable.isDataTable('.table')) {
-                    var oTable = $('.table').DataTable();
-                    if (oTable && oTable.ajax) {
-                        clearInterval(checkTable);
-                        // Small delay to ensure everything is ready
-                        setTimeout(function() {
-                            oTable.ajax.reload();
-                        }, 100);
-                    }
-                }
-            } catch(e) {
-                // DataTable not ready yet, continue checking
-            }
-        }, 100);
-
-        // Stop checking after 5 seconds
-        setTimeout(function() {
-            clearInterval(checkTable);
-        }, 5000);
+        reloadTableWhenReady();
     }
 });
 
@@ -800,33 +762,6 @@ $(window).on('hashchange', function() {
     parseApplecareHash();
     // Only reload if we're on the listing page
     if ($('.table').length > 0) {
-        // Wait for DataTable to be fully initialized before reloading
-        var checkTable = setInterval(function() {
-            try {
-                // Check if DataTable is already initialized
-                if ($.fn.dataTable.isDataTable('.table')) {
-                    var oTable = $('.table').DataTable();
-                    // Check if DataTable has ajax method
-                    if (oTable && typeof oTable.ajax === 'function' && typeof oTable.ajax.reload === 'function') {
-                        clearInterval(checkTable);
-                        // Small delay to ensure everything is ready
-                        setTimeout(function() {
-                            try {
-                                oTable.ajax.reload();
-                            } catch(e) {
-                                // DataTable might not be ready yet, ignore error
-                            }
-                        }, 100);
-                    }
-                }
-            } catch(e) {
-                // DataTable not initialized yet, continue checking
-            }
-        }, 100);
-        
-        // Stop checking after 5 seconds
-        setTimeout(function() {
-            clearInterval(checkTable);
-        }, 5000);
+        reloadTableWhenReady();
     }
 });

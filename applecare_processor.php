@@ -2,9 +2,24 @@
 
 use munkireport\processors\Processor;
 use CFPropertyList\CFPropertyList;
+use Illuminate\Database\Capsule\Manager as Capsule;
 
 class Applecare_processor extends Processor
 {
+    /**
+     * Force database reconnection
+     */
+    private function reconnectDatabase()
+    {
+        try {
+            $connection = Capsule::connection();
+            $connection->reconnect();
+        } catch (\Exception $e) {
+            // Log but don't throw - let the retry logic handle it
+            error_log("AppleCare: Database reconnect attempt: " . $e->getMessage());
+        }
+    }
+
     public function run($data)
     {
         try {
@@ -40,7 +55,28 @@ class Applecare_processor extends Processor
 
             // Also trigger sync on first check-in (when no record exists for this serial_number)
             if (!$trigger_sync) {
-                $existing = Applecare_model::where('serial_number', $this->serial_number)->exists();
+                // Check with retry logic for connection timeouts
+                $max_retries = 3;
+                $existing = false;
+                for ($retry = 0; $retry < $max_retries; $retry++) {
+                    try {
+                        $existing = Applecare_model::where('serial_number', $this->serial_number)->exists();
+                        break; // Success, exit retry loop
+                    } catch (\Exception $e) {
+                        $error_message = $e->getMessage();
+                        if (strpos($error_message, 'server has gone away') !== false || 
+                            strpos($error_message, 'Lost connection') !== false ||
+                            strpos($error_message, '2006') !== false) {
+                            if ($retry < $max_retries - 1) {
+                                // Force reconnect before retry
+                                $this->reconnectDatabase();
+                                usleep(500000); // 0.5 seconds before retry
+                                continue;
+                            }
+                        }
+                        throw $e; // Rethrow if not a connection error or max retries reached
+                    }
+                }
                 if (!$existing) {
                     // First check-in for this device - trigger sync
                     $trigger_sync = true;

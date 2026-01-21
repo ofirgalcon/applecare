@@ -221,9 +221,16 @@ $skipped = 0;
 // This provides smoother rate limiting than fixed windows
 $request_timestamps = [];
 
+// Calculate devices per minute based on rate limit
+// Each device requires 2 API calls, and we use 80% of limit
+$effective_rate_limit = (int)($rate_limit * 0.8);
+$requests_per_device = 2;
+$devices_per_minute = $effective_rate_limit / $requests_per_device;
+
 echo "\nStarting sync...\n";
-echo "Rate limit: $rate_limit calls per minute\n";
-echo "Estimated time: " . ceil($total_devices / $rate_limit) . " minutes\n\n";
+echo "Rate limit: $rate_limit calls per minute (using 80% = $effective_rate_limit)\n";
+echo "Devices per minute: " . round($devices_per_minute, 1) . "\n";
+echo "Estimated time: " . ceil($total_devices / $devices_per_minute) . " minutes\n\n";
 
 foreach ($devices as $device) {
     $serial = $device->serial_number;

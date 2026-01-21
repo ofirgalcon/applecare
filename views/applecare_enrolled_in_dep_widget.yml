@@ -9,8 +9,8 @@ buttons:
   - label: 1
     i18n_label: yes
     class: btn-success
-    search_component: enrolled_in_dep=1
+    search_component: is_primary=1&enrolled_in_dep=1
   - label: 0
     i18n_label: no
     class: btn-danger
-    search_component: enrolled_in_dep=0
+    search_component: is_primary=1&enrolled_in_dep=0
