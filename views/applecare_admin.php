@@ -7,7 +7,7 @@
             <p>Run the AppleCare sync script and inspect the output.</p>
             <div class="alert alert-warning">
                 <strong>Warning:</strong> The sync will stop if you close this page.
-                <br><strong>Server timeout:</strong> Your server has a PHP execution time limit (max_execution_time: 300 seconds / 5 minutes). 
+                <br><strong>Server timeout:</strong> <span id="timeout-info">Loading...</span>
                 For large syncs (100+ devices), the sync may timeout. For long-running syncs, use the CLI script instead: <code>php sync_applecare.php</code>
                 <div style="padding-top: 4px;"><strong>Devices to process:</strong> <span id="device-count-display">Loading...</span></div>
             </div>
@@ -64,9 +64,36 @@
     var syncedCount = 0;
     var totalDevices = 0;
     var processedDevices = 0;
+    var devicesPerMinute = 8; // Default, will be updated from server config
     
     // Load admin status data (similar to jamf_admin.php)
     $.getJSON(appUrl + '/module/applecare/get_admin_data', function(data) {
+        // Calculate devices per minute from rate limit (80% of limit, 2 requests per device)
+        if (data.rate_limit) {
+            var effectiveRateLimit = Math.floor(data.rate_limit * 0.8);
+            var requestsPerDevice = 2;
+            devicesPerMinute = effectiveRateLimit / requestsPerDevice;
+        }
+        
+        // Display actual server timeout info
+        if (data.max_execution_time !== undefined) {
+            var timeoutText;
+            if (data.max_execution_time === 0) {
+                timeoutText = 'No PHP execution time limit (unlimited).';
+            } else {
+                var minutes = Math.floor(data.max_execution_time / 60);
+                var seconds = data.max_execution_time % 60;
+                var timeStr = minutes > 0 ? minutes + ' minute' + (minutes !== 1 ? 's' : '') : '';
+                if (seconds > 0) {
+                    timeStr += (timeStr ? ' ' : '') + seconds + ' second' + (seconds !== 1 ? 's' : '');
+                }
+                timeoutText = 'PHP execution time limit: ' + data.max_execution_time + ' seconds (' + timeStr + ').';
+            }
+            $('#timeout-info').text(timeoutText);
+        } else {
+            $('#timeout-info').text('Unable to determine PHP execution time limit.');
+        }
+        
         var statusRows = '<table class="table table-striped"><tbody>';
         
         // API URL configured
@@ -80,7 +107,7 @@
             '</td></tr>';
         
         // Rate Limit
-        statusRows += '<tr><th>Rate Limit</th><td>' + data.rate_limit + ' requests/minute</td></tr>';
+        statusRows += '<tr><th>Rate Limit</th><td>' + data.rate_limit + ' requests/minute (' + devicesPerMinute.toFixed(1) + ' devices/min)</td></tr>';
         
         // Show API URL if configured (masked for security)
         if (data.default_api_url) {
@@ -124,8 +151,13 @@
         
         statusRows += '</tbody></table>';
         $('#AppleCare-System-Status').html(statusRows);
+        
+        // Now that we have the rate limit, update the device count display
+        updateDeviceCount();
     }).fail(function() {
         $('#AppleCare-System-Status').html('<div class="alert alert-warning">Unable to load system status</div>');
+        // Still load device count even if admin data fails (will use default rate)
+        updateDeviceCount();
     });
 
     // Load device count and update display
@@ -145,9 +177,8 @@
                 }
                 $deviceCountDisplay.text(text);
                 
-                // Calculate and display estimated time (assuming 8 devices per minute)
+                // Calculate and display estimated time using configured rate limit
                 if (count > 0) {
-                    var devicesPerMinute = 8;
                     var estimatedSeconds = Math.ceil((count / devicesPerMinute) * 60);
                     updateEstimatedTime(estimatedSeconds, count);
                 } else {
@@ -168,8 +199,8 @@
         updateDeviceCount();
     });
     
-    // Load initial count
-    updateDeviceCount();
+    // Note: Initial updateDeviceCount() is called after get_admin_data succeeds
+    // to ensure we have the correct rate limit before calculating estimated time
 
     function updateProgress() {
         if (totalDevices > 0) {
@@ -177,10 +208,9 @@
             $('#sync-progress .progress-bar').css('width', percent + '%').attr('aria-valuenow', percent);
             $('#progress-bar-percent').text(processedDevices + '/' + totalDevices + ' (' + percent + '%)');
             
-            // Update estimated time whenever progress updates (assuming 8 devices per minute)
+            // Update estimated time using configured rate limit
             var remainingDevices = totalDevices - processedDevices;
             if (remainingDevices > 0) {
-                var devicesPerMinute = 8;
                 var estimatedSeconds = Math.ceil((remainingDevices / devicesPerMinute) * 60);
                 updateEstimatedTime(estimatedSeconds, remainingDevices);
             } else {

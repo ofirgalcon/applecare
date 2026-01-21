@@ -233,7 +233,7 @@ $(document).on('appReady', function(){
                     var td = $('<td>');
                     
                     // Format status with colors (capitalize first letter only)
-                    // Check end date for 31-day warning
+                    // Check end date for expired/expiring status
                     if (key === 'status') {
                         var statusUpper = String(data[key]).toUpperCase();
                         var statusDisplay = data[key].charAt(0).toUpperCase() + data[key].slice(1).toLowerCase();
@@ -241,24 +241,27 @@ $(document).on('appReady', function(){
                         
                         if (statusUpper === 'ACTIVE') {
                             var tooltipText = '';
-                            // Check if endDateTime exists and is less than 31 days away
+                            labelClass = 'label-success';
+                            
+                            // Check if endDateTime exists
                             if (data.endDateTime) {
                                 var parsedEndDate = moment(data.endDateTime, ['YYYY-MM-DD', 'YYYY-MM-DD HH:mm:ss'], true);
                                 if (parsedEndDate.isValid()) {
-                                    var now = moment();
+                                    var now = moment().startOf('day');
                                     var daysUntil = parsedEndDate.diff(now, 'days');
-                                    // If end date is less than 31 days away, use yellow warning
-                                    if (daysUntil >= 0 && daysUntil < 31) {
+                                    
+                                    if (daysUntil < 0) {
+                                        // End date is in the past - coverage has expired
+                                        labelClass = 'label-danger';
+                                        statusDisplay = i18n.t('applecare.expired') || 'Expired';
+                                        var daysAgo = Math.abs(daysUntil);
+                                        tooltipText = 'Coverage expired ' + daysAgo + ' day' + (daysAgo !== 1 ? 's' : '') + ' ago';
+                                    } else if (daysUntil < 31) {
+                                        // Expiring within 30 days
                                         labelClass = 'label-warning';
                                         tooltipText = 'Coverage expires in ' + daysUntil + ' day' + (daysUntil !== 1 ? 's' : '');
-                                    } else {
-                                        labelClass = 'label-success';
                                     }
-                                } else {
-                                    labelClass = 'label-success';
                                 }
-                            } else {
-                                labelClass = 'label-success';
                             }
                             var statusHtml = '<span class="label ' + labelClass + '"';
                             if (tooltipText) {

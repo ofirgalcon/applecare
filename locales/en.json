@@ -28,10 +28,12 @@
         "released_from_org_date": "Released from Org Date",
         "wifi_mac_address": "Wi-Fi MAC Address",
         "ethernet_mac_address": "Ethernet MAC Address",
-        "bluetooth_mac_address": "Bluetooth MAC Address"
+        "bluetooth_mac_address": "Bluetooth MAC Address",
+        "coverage_status": "Coverage Status",
+        "is_primary": "Primary Plan"
     },
     "device_info": {
-        "title": "Device Information"
+        "title": "AxM Device Information"
     },
     "coverage_info": {
         "title": "AppleCare Coverage"
@@ -50,10 +52,19 @@
     "widget_tooltip": "Shows count of devices with AppleCare coverage. Green indicates devices with active coverage, yellow indicates devices with coverage expiring soon, red indicates devices with expired coverage.",
     "total_devices": "Total Devices",
     "active": "Active",
+    "active_tooltip": "Devices with active AppleCare coverage",
+    "active_title": "Devices with Active AppleCare",
+    "active_description": "Devices with active AppleCare coverage (not expiring within 30 days).",
     "expiring_soon": "Expiring Soon",
-    "expiring_soon_tooltip": "Devices with coverage expiring within 30 days",
+    "expiring_soon_tooltip": "Devices whose only active coverage expires within 30 days",
+    "expiring_soon_title": "Devices with Expiring AppleCare",
+    "expiring_soon_description": "Devices whose only active AppleCare coverage expires within 30 days.",
+    "back_to_full_listing": "Back to Full Listing",
     "expired": "Expired",
     "inactive": "Expired",
+    "inactive_tooltip": "Devices with no active AppleCare coverage",
+    "inactive_title": "Devices with Expired AppleCare",
+    "inactive_description": "Devices with no active AppleCare coverage (all plans expired or inactive).",
     "sync_now": "Sync Now",
     "widget": {
         "status_title": "Status",

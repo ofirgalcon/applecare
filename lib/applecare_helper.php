@@ -3,9 +3,28 @@
 namespace munkireport\module\applecare;
 
 use Symfony\Component\Yaml\Yaml;
+use Illuminate\Database\Capsule\Manager as Capsule;
 
 class Applecare_helper
 {
+    /**
+     * Force database reconnection
+     * 
+     * Called when we detect "server has gone away" to ensure
+     * the next query uses a fresh connection.
+     */
+    private function reconnectDatabase()
+    {
+        try {
+            // Get the Capsule connection and force reconnect
+            $connection = Capsule::connection();
+            $connection->reconnect();
+        } catch (\Exception $e) {
+            // If reconnect fails, log but don't throw - let the retry logic handle it
+            error_log("AppleCare: Database reconnect attempt: " . $e->getMessage());
+        }
+    }
+
     /**
      * Get Munki ClientID for a serial number
      *
@@ -15,16 +34,11 @@ class Applecare_helper
     private function getClientId($serial_number)
     {
         try {
-            $machine = new \Model();
-            $sql = "SELECT munkiinfo_value 
-                    FROM munkiinfo 
-                    WHERE serial_number = ? 
-                    AND munkiinfo_key = 'ClientIdentifier' 
-                    LIMIT 1";
-            $result = $machine->query($sql, [$serial_number]);
-            if (!empty($result) && isset($result[0])) {
-                return $result[0]->munkiinfo_value ?? null;
-            }
+            $result = Capsule::table('munkiinfo')
+                ->where('serial_number', $serial_number)
+                ->where('munkiinfo_key', 'ClientIdentifier')
+                ->value('munkiinfo_value');
+            return $result ?: null;
         } catch (\Exception $e) {
             // Silently fail - ClientID is optional
         }
@@ -42,18 +56,12 @@ class Applecare_helper
     private function getMachineGroupKey($serial_number)
     {
         try {
-            $machine = new \Model();
-            // Get machine group key from munkireportinfo.passphrase
-            $sql = "SELECT passphrase 
-                    FROM munkireportinfo 
-                    WHERE serial_number = ? 
-                    AND passphrase IS NOT NULL 
-                    AND passphrase != ''
-                    LIMIT 1";
-            $result = $machine->query($sql, [$serial_number]);
-            if (!empty($result) && isset($result[0])) {
-                return $result[0]->passphrase ?? null;
-            }
+            $result = Capsule::table('munkireportinfo')
+                ->where('serial_number', $serial_number)
+                ->whereNotNull('passphrase')
+                ->where('passphrase', '!=', '')
+                ->value('passphrase');
+            return $result ?: null;
         } catch (\Exception $e) {
             // Silently fail - machine group key is optional
         }
@@ -291,7 +299,7 @@ class Applecare_helper
 
         if ($http_code === 429) {
             // Extract Retry-After header if available
-            $retry_after = 60; // Default to 60 seconds
+            $retry_after = 30; // Default to 30 seconds
             if (preg_match('/Retry-After:\s*(\d+)/i', $headers, $matches)) {
                 $retry_after = (int)$matches[1];
             }
@@ -365,6 +373,24 @@ class Applecare_helper
             return ['success' => false, 'records' => 0, 'requests' => $requests, 'message' => 'SKIP (HTTP 404) - Device not found in Apple Business/School Manager', 'rate_limit' => null, 'rate_limit_remaining' => null];
         }
 
+        // Handle rate limit (HTTP 429) on device lookup - return immediately with retry_after
+        if ($device_http_code === 429) {
+            $retry_after = 30; // Default
+            $device_headers = substr($device_response, 0, $device_header_size);
+            if (preg_match('/Retry-After:\s*(\d+)/i', $device_headers, $matches)) {
+                $retry_after = (int)$matches[1];
+            }
+            return [
+                'success' => false, 
+                'records' => 0, 
+                'requests' => $requests, 
+                'message' => 'SKIP (HTTP 429 - Rate limit exceeded on device lookup)',
+                'retry_after' => $retry_after,
+                'rate_limit' => null,
+                'rate_limit_remaining' => null
+            ];
+        }
+
         // Extract device information if available
         if ($device_http_code === 200) {
             if ($device_curl_error) {
@@ -417,10 +443,8 @@ class Applecare_helper
                 }
             }
         } else {
-            // Non-200 response - log warning but continue to fetch coverage
-            if ($device_http_code !== 404) {
-                error_log("AppleCare: Device lookup failed for {$serial_number} with HTTP {$device_http_code}, but continuing to fetch coverage");
-            }
+            // Non-200/404/429 response - log warning but continue to fetch coverage
+            error_log("AppleCare: Device lookup failed for {$serial_number} with HTTP {$device_http_code}, but continuing to fetch coverage");
         }
 
         // Call Apple API for AppleCare coverage
@@ -524,8 +548,8 @@ class Applecare_helper
                 }
             }
             
-            // Use Retry-After if provided, otherwise default to 60 seconds
-            $wait_time = $retry_after ?: 60;
+            // Use Retry-After if provided, otherwise default to 30 seconds
+            $wait_time = $retry_after ?: 30;
             
             $error_msg = "SKIP (HTTP 429 - Rate limit exceeded)";
             if ($retry_after) {
@@ -610,8 +634,28 @@ class Applecare_helper
                 }
                 
                 // Update or create device info record
-                // First, try to update any existing records for this serial number
-                $existing_records = \Applecare_model::where('serial_number', $serial_number)->get();
+                // First, try to update any existing records for this serial number (with retry for connection timeouts)
+                $existing_records = null;
+                $max_retries = 3;
+                for ($retry = 0; $retry < $max_retries; $retry++) {
+                    try {
+                        $existing_records = \Applecare_model::where('serial_number', $serial_number)->get();
+                        break; // Success
+                    } catch (\Exception $e) {
+                        $error_message = $e->getMessage();
+                        if (strpos($error_message, 'server has gone away') !== false || 
+                            strpos($error_message, 'Lost connection') !== false ||
+                            strpos($error_message, '2006') !== false) {
+                            if ($retry < $max_retries - 1) {
+                                // Force reconnect before retry
+                                $this->reconnectDatabase();
+                                usleep(500000); // 0.5 seconds
+                                continue;
+                            }
+                        }
+                        throw $e;
+                    }
+                }
                 if ($existing_records->count() > 0) {
                     // Update all existing records with latest device info
                     foreach ($existing_records as $record) {
@@ -660,7 +704,8 @@ class Applecare_helper
                                 strpos($error_message, '2006') !== false) {
                                 $retry_count++;
                                 if ($retry_count < $max_retries) {
-                                    // Small delay before retry - Eloquent will automatically reconnect
+                                    // Force reconnect before retry
+                                    $this->reconnectDatabase();
                                     usleep(500000); // 0.5 seconds
                                 } else {
                                     error_log("AppleCare: Failed to save device info record after {$max_retries} retries: {$error_message}");
@@ -672,6 +717,9 @@ class Applecare_helper
                         }
                     }
                 }
+                
+                // Update which plan is "the one" for this device
+                $this->updatePrimaryPlan($serial_number);
                 
                 // Device info was collected - count as successful API call
                 return ['success' => true, 'records' => 0, 'requests' => $requests, 'message' => 'No Coverage, getting device Information'];
@@ -752,7 +800,8 @@ class Applecare_helper
                         strpos($error_message, '2006') !== false) {
                         $retry_count++;
                         if ($retry_count < $max_retries) {
-                            // Small delay before retry - Eloquent will automatically reconnect
+                            // Force reconnect before retry
+                            $this->reconnectDatabase();
                             usleep(500000); // 0.5 seconds
                         } else {
                             error_log("AppleCare: Failed to save coverage record after {$max_retries} retries: {$error_message}");
@@ -770,6 +819,9 @@ class Applecare_helper
             }
         }
 
+        // Update which plan is "the one" for this device
+        $this->updatePrimaryPlan($serial_number);
+
         return [
             'success' => true, 
             'records' => $records_saved, 
@@ -778,6 +830,84 @@ class Applecare_helper
             'rate_limit' => $detected_rate_limit,
             'rate_limit_remaining' => $detected_rate_limit_remaining
         ];
+    }
+
+    /**
+     * Update which plan is marked as primary for a device and set coverage_status
+     * 
+     * Logic (same as tab's get_data):
+     * - Pick the plan with the latest end date (treating null as very old date)
+     * - This is the "most relevant" plan for display purposes
+     * 
+     * Coverage status is then determined based on the primary plan:
+     * - "active": Plan is active (status=ACTIVE, not canceled, end date > 30 days from now)
+     * - "expiring_soon": Plan is active but end date <= 30 days from now
+     * - "inactive": Plan is not active (status != ACTIVE, or canceled, or end date in past)
+     * 
+     * @param string $serial_number
+     * @return void
+     */
+    public function updatePrimaryPlan($serial_number)
+    {
+        if (empty($serial_number)) {
+            return;
+        }
+
+        try {
+            $now = date('Y-m-d');
+            $thirtyDays = date('Y-m-d', strtotime('+30 days'));
+            
+            // Get all plans for this device
+            $plans = \Applecare_model::where('serial_number', $serial_number)->get();
+            
+            if ($plans->isEmpty()) {
+                return;
+            }
+
+            // Reset all plans to non-primary and clear coverage_status
+            \Applecare_model::where('serial_number', $serial_number)
+                ->update(['is_primary' => 0, 'coverage_status' => null]);
+
+            // Pick the plan with the latest end date (same logic as tab's get_data)
+            // Treat null end dates as very old (1970-01-01)
+            $primary = $plans->sortByDesc(function($plan) {
+                $endDate = $plan->endDateTime;
+                if ($endDate instanceof \DateTime || (is_object($endDate) && method_exists($endDate, 'format'))) {
+                    return $endDate->format('Y-m-d');
+                }
+                return $endDate ?? '1970-01-01';
+            })->first();
+
+            if ($primary) {
+                // Determine coverage status based on the primary plan
+                $endDate = $primary->endDateTime;
+                if ($endDate instanceof \DateTime || (is_object($endDate) && method_exists($endDate, 'format'))) {
+                    $endDate = $endDate->format('Y-m-d');
+                }
+                
+                $status = strtoupper($primary->status ?? '');
+                $isCanceled = !empty($primary->isCanceled);
+                
+                // Check if plan is active (status=ACTIVE, not canceled, end date in future)
+                $isActive = $status === 'ACTIVE' 
+                    && !$isCanceled 
+                    && !empty($endDate) 
+                    && $endDate >= $now;
+                
+                if ($isActive) {
+                    // Active - check if expiring soon
+                    $coverageStatus = ($endDate <= $thirtyDays) ? 'expiring_soon' : 'active';
+                } else {
+                    // Inactive (expired, canceled, or status != ACTIVE)
+                    $coverageStatus = 'inactive';
+                }
+                
+                \Applecare_model::where('id', $primary->id)
+                    ->update(['is_primary' => 1, 'coverage_status' => $coverageStatus]);
+            }
+        } catch (\Exception $e) {
+            error_log("AppleCare: Failed to update primary plan for {$serial_number}: " . $e->getMessage());
+        }
     }
 
     /**
