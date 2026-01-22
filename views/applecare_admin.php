@@ -15,6 +15,12 @@
                 <button id="sync-applecare" class="btn btn-primary">
                     <i class="fa fa-refresh"></i> Run AppleCare Sync
                 </button>
+                <button id="stop-sync" class="btn btn-danger" style="margin-left:8px; display:none;" data-toggle="tooltip" data-placement="top" title="Stop the running sync. Progress will be saved and you can resume later.">
+                    <i class="fa fa-stop"></i> Stop Sync
+                </button>
+                <button id="reset-progress" class="btn btn-warning" style="margin-left:8px;" data-toggle="tooltip" data-placement="top" title="Clear saved sync progress. The next sync will start from the beginning instead of resuming from where it left off.">
+                    <i class="fa fa-undo"></i> Reset Progress
+                </button>
                 <label class="checkbox-inline" style="margin-left:15px;">
                     <input type="checkbox" id="exclude-existing-checkbox"> Exclude devices with existing AppleCare records
                 </label>
@@ -334,6 +340,8 @@
         }
         $btn.prop('disabled', false);
         $excludeCheckbox.prop('disabled', false);
+        $('#stop-sync').hide();
+        $('#reset-progress').prop('disabled', false);
         
         // Reset auto-resume state when manually stopped
         if (typeof resetAutoResumeState === 'function') {
@@ -356,6 +364,8 @@
         
         $btn.prop('disabled', true);
         $excludeCheckbox.prop('disabled', true);
+        $('#stop-sync').show();
+        $('#reset-progress').prop('disabled', true);
         $status.text('Running…');
         
         // Don't clear output on auto-resume to preserve history
@@ -651,6 +661,142 @@
     $btn.on('click', function(){
         startSync();
     });
+    
+    // Stop sync button
+    $('#stop-sync').on('click', function(){
+        var $stopBtn = $(this);
+        var originalText = $stopBtn.html();
+        
+        // Disable button and show loading state
+        $stopBtn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Stopping...');
+        
+        $.ajax({
+            url: appUrl + '/module/applecare/stop_sync',
+            method: 'POST',
+            dataType: 'json',
+            success: function(data) {
+                if (data.success) {
+                    // Show success message
+                    $stopBtn.html('<i class="fa fa-check"></i> Stop Signal Sent').removeClass('btn-danger').addClass('btn-success');
+                    appendOutput('Stop signal sent. Sync will stop after processing current device...\n');
+                    
+                    // Close the EventSource connection
+                    if (eventSource) {
+                        eventSource.close();
+                        eventSource = null;
+                    }
+                    
+                    // Update UI
+                    setTimeout(function() {
+                        stopSync();
+                        $stopBtn.html(originalText).removeClass('btn-success').addClass('btn-danger').prop('disabled', false);
+                    }, 2000);
+                } else {
+                    alert('Failed to stop sync: ' + (data.message || 'Unknown error'));
+                    $stopBtn.html(originalText).prop('disabled', false);
+                }
+            },
+            error: function(xhr, status, error) {
+                var errorMsg = 'Failed to stop sync';
+                if (xhr.responseJSON && xhr.responseJSON.message) {
+                    errorMsg += ': ' + xhr.responseJSON.message;
+                } else {
+                    errorMsg += ': ' + error;
+                }
+                alert(errorMsg);
+                $stopBtn.html(originalText).prop('disabled', false);
+            }
+        });
+    });
+    
+    // Reset progress button
+    $('#reset-progress').on('click', function(){
+        var $resetBtn = $(this);
+        var originalText = $resetBtn.html();
+        
+        // Disable button and show loading state
+        $resetBtn.prop('disabled', true).html('<i class="fa fa-spinner fa-spin"></i> Resetting...');
+        
+        $.ajax({
+            url: appUrl + '/module/applecare/reset_progress',
+            method: 'POST',
+            dataType: 'json',
+            success: function(data) {
+                if (data.success) {
+                    // Reset all progress-related UI elements
+                    totalDevices = 0;
+                    processedDevices = 0;
+                    $('#sync-progress').addClass('hide');
+                    $('#sync-progress .progress-bar').css('width', '0%').attr('aria-valuenow', 0);
+                    $('#progress-bar-percent').text('0%');
+                    $('#estimated-time-display').text('');
+                    
+                    // Recalculate estimated time based on current device count
+                    updateDeviceCount();
+                    
+                    // Show success message
+                    $resetBtn.html('<i class="fa fa-check"></i> Reset').removeClass('btn-warning').addClass('btn-success');
+                    setTimeout(function() {
+                        $resetBtn.html(originalText).removeClass('btn-success').addClass('btn-warning').prop('disabled', false);
+                        // Update tooltip to reflect cleared progress
+                        updateResetProgressTooltip();
+                    }, 2000);
+                    
+                    // Show notification
+                    appendOutput('Sync progress has been reset.\n');
+                } else {
+                    alert('Failed to reset progress: ' + (data.message || 'Unknown error'));
+                    $resetBtn.html(originalText).prop('disabled', false);
+                }
+            },
+            error: function(xhr, status, error) {
+                var errorMsg = 'Failed to reset progress';
+                if (xhr.responseJSON && xhr.responseJSON.message) {
+                    errorMsg += ': ' + xhr.responseJSON.message;
+                } else {
+                    errorMsg += ': ' + error;
+                }
+                alert(errorMsg);
+                $resetBtn.html(originalText).prop('disabled', false);
+            }
+        });
+    });
+    
+    // Function to update reset progress tooltip with remaining device count
+    function updateResetProgressTooltip() {
+        $.getJSON(appUrl + '/module/applecare/get_progress', function(data) {
+            var $resetBtn = $('#reset-progress');
+            var tooltipText;
+            
+            if (data.success && data.has_progress && data.remaining > 0) {
+                tooltipText = 'Clear saved sync progress (' + data.remaining + ' device' + (data.remaining !== 1 ? 's' : '') + ' remaining). The next sync will start from the beginning instead of resuming.';
+            } else {
+                tooltipText = 'Clear saved sync progress. The next sync will start from the beginning instead of resuming from where it left off.';
+            }
+            
+            // Update tooltip - destroy and recreate to ensure it updates
+            $resetBtn.attr('title', tooltipText);
+            if ($resetBtn.data('bs.tooltip')) {
+                $resetBtn.tooltip('destroy');
+            }
+            $resetBtn.tooltip();
+        }).fail(function() {
+            // On error, use default tooltip
+            var $resetBtn = $('#reset-progress');
+            var tooltipText = 'Clear saved sync progress. The next sync will start from the beginning instead of resuming from where it left off.';
+            $resetBtn.attr('title', tooltipText);
+            if ($resetBtn.data('bs.tooltip')) {
+                $resetBtn.tooltip('destroy');
+            }
+            $resetBtn.tooltip();
+        });
+    }
+    
+    // Initialize tooltips first
+    $('[data-toggle="tooltip"]').tooltip();
+    
+    // Load progress count on page load and update tooltip
+    updateResetProgressTooltip();
 })();
 </script>
 

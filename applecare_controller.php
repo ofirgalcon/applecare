@@ -354,22 +354,55 @@ class Applecare_controller extends Module_controller
      */
     private function loadProgress()
     {
-        try {
-            $cache_value = \munkireport\models\Cache::select('value')
-                ->where('module', 'applecare')
-                ->where('property', 'sync_progress')
-                ->value('value');
-            
-            if ($cache_value) {
-                $progress = json_decode($cache_value, true);
-                if ($progress && is_array($progress)) {
-                    return $progress;
+        $max_retries = 3;
+        for ($retry = 0; $retry < $max_retries; $retry++) {
+            try {
+                $cache_value = \munkireport\models\Cache::select('value')
+                    ->where('module', 'applecare')
+                    ->where('property', 'sync_progress')
+                    ->value('value');
+                
+                if ($cache_value) {
+                    $progress = json_decode($cache_value, true);
+                    if ($progress && is_array($progress)) {
+                        return $progress;
+                    }
                 }
+                return null;
+            } catch (\Exception $e) {
+                $error_message = $e->getMessage();
+                // Check if it's a connection error
+                if (strpos($error_message, 'server has gone away') !== false || 
+                    strpos($error_message, 'Lost connection') !== false ||
+                    strpos($error_message, '2006') !== false) {
+                    if ($retry < $max_retries - 1) {
+                        // Force reconnect before retry
+                        $this->reconnectDatabase();
+                        usleep(500000); // 0.5 seconds
+                        continue;
+                    }
+                }
+                // Silently fail - progress is optional
+                error_log('AppleCare: Failed to load progress from cache (attempt ' . ($retry + 1) . '): ' . $e->getMessage());
             }
-        } catch (\Exception $e) {
-            // Silently fail - progress is optional
         }
         return null;
+    }
+    
+    /**
+     * Reconnect database connection
+     */
+    private function reconnectDatabase()
+    {
+        try {
+            // Get the Eloquent connection and force reconnect
+            /** @var \Illuminate\Database\Connection $connection */
+            $connection = Applecare_model::getConnectionResolver()->connection();
+            $connection->reconnect();
+        } catch (\Exception $e) {
+            // Log but don't throw - let retry logic handle it
+            error_log("AppleCare: Database reconnect attempt: " . $e->getMessage());
+        }
     }
 
     /**
@@ -377,27 +410,44 @@ class Applecare_controller extends Module_controller
      */
     private function saveProgress($devices, $processed, $excludeExisting)
     {
-        try {
-            // Load existing progress to preserve started_at timestamp
-            $existing = $this->loadProgress();
-            $started_at = $existing && isset($existing['started_at']) ? $existing['started_at'] : time();
-            
-            $progress = [
-                'devices' => $devices,
-                'processed' => $processed,
-                'exclude_existing' => $excludeExisting,
-                'last_updated' => time(),
-                'started_at' => $started_at
-            ];
-            
-            // Store in cache table instead of file system
-            \munkireport\models\Cache::updateOrCreate(
-                ['module' => 'applecare', 'property' => 'sync_progress'],
-                ['value' => json_encode($progress, JSON_PRETTY_PRINT), 'timestamp' => time()]
-            );
-        } catch (\Exception $e) {
-            // Silently fail - progress saving is optional
-            error_log('AppleCare: Failed to save progress to cache: ' . $e->getMessage());
+        $max_retries = 3;
+        for ($retry = 0; $retry < $max_retries; $retry++) {
+            try {
+                // Load existing progress to preserve started_at timestamp
+                $existing = $this->loadProgress();
+                $started_at = $existing && isset($existing['started_at']) ? $existing['started_at'] : time();
+                
+                $progress = [
+                    'devices' => $devices,
+                    'processed' => $processed,
+                    'exclude_existing' => $excludeExisting,
+                    'last_updated' => time(),
+                    'started_at' => $started_at
+                ];
+                
+                // Store in cache table instead of file system
+                \munkireport\models\Cache::updateOrCreate(
+                    ['module' => 'applecare', 'property' => 'sync_progress'],
+                    ['value' => json_encode($progress, JSON_PRETTY_PRINT), 'timestamp' => time()]
+                );
+                return; // Success
+            } catch (\Exception $e) {
+                $error_message = $e->getMessage();
+                // Check if it's a connection error
+                if (strpos($error_message, 'server has gone away') !== false || 
+                    strpos($error_message, 'Lost connection') !== false ||
+                    strpos($error_message, '2006') !== false) {
+                    if ($retry < $max_retries - 1) {
+                        // Force reconnect before retry
+                        $this->reconnectDatabase();
+                        usleep(500000); // 0.5 seconds
+                        continue;
+                    }
+                }
+                // Log error but don't throw - progress saving is optional
+                error_log('AppleCare: Failed to save progress to cache (attempt ' . ($retry + 1) . '): ' . $e->getMessage());
+                return; // Give up after retries
+            }
         }
     }
 
@@ -406,12 +456,176 @@ class Applecare_controller extends Module_controller
      */
     private function clearProgress()
     {
+        $max_retries = 3;
+        for ($retry = 0; $retry < $max_retries; $retry++) {
+            try {
+                \munkireport\models\Cache::where('module', 'applecare')
+                    ->where('property', 'sync_progress')
+                    ->delete();
+                return; // Success
+            } catch (\Exception $e) {
+                $error_message = $e->getMessage();
+                // Check if it's a connection error
+                if (strpos($error_message, 'server has gone away') !== false || 
+                    strpos($error_message, 'Lost connection') !== false ||
+                    strpos($error_message, '2006') !== false) {
+                    if ($retry < $max_retries - 1) {
+                        // Force reconnect before retry
+                        $this->reconnectDatabase();
+                        usleep(500000); // 0.5 seconds
+                        continue;
+                    }
+                }
+                // Silently fail - progress clearing is optional
+                error_log('AppleCare: Failed to clear progress from cache (attempt ' . ($retry + 1) . '): ' . $e->getMessage());
+                return; // Give up after retries
+            }
+        }
+    }
+    
+    /**
+     * Check if stop has been requested
+     */
+    private function isStopRequested()
+    {
+        try {
+            $stop_flag = \munkireport\models\Cache::select('value')
+                ->where('module', 'applecare')
+                ->where('property', 'stop_requested')
+                ->value('value');
+            return $stop_flag === '1';
+        } catch (\Exception $e) {
+            // On error, assume not stopped
+            return false;
+        }
+    }
+    
+    /**
+     * Set stop flag
+     */
+    private function setStopFlag($value = true)
+    {
+        try {
+            \munkireport\models\Cache::updateOrCreate(
+                ['module' => 'applecare', 'property' => 'stop_requested'],
+                ['value' => $value ? '1' : '0', 'timestamp' => time()]
+            );
+        } catch (\Exception $e) {
+            error_log('AppleCare: Failed to set stop flag: ' . $e->getMessage());
+        }
+    }
+    
+    /**
+     * Clear stop flag
+     */
+    private function clearStopFlag()
+    {
         try {
             \munkireport\models\Cache::where('module', 'applecare')
-                ->where('property', 'sync_progress')
+                ->where('property', 'stop_requested')
                 ->delete();
         } catch (\Exception $e) {
-            // Silently fail - progress clearing is optional
+            // Silently fail
+        }
+    }
+    
+    /**
+     * Stop the running sync (public endpoint for admin panel)
+     * Sets a stop flag that the sync loop will check
+     *
+     * @return void
+     * @author tuxudo
+     **/
+    public function stop_sync()
+    {
+        // Check authorization
+        if (! $this->authorized('global')) {
+            $this->jsonError('Not authorized - admin access required', 403);
+            return;
+        }
+        
+        try {
+            $this->setStopFlag(true);
+            jsonView([
+                'success' => true,
+                'message' => 'Stop signal sent. The sync will stop after processing the current device.'
+            ]);
+        } catch (\Exception $e) {
+            error_log('AppleCare: Failed to stop sync: ' . $e->getMessage());
+            $this->jsonError('Failed to stop sync: ' . $e->getMessage(), 500);
+        }
+    }
+    
+    /**
+     * Get current sync progress (public endpoint for admin panel)
+     * Returns remaining device count if progress exists
+     *
+     * @return void
+     * @author tuxudo
+     **/
+    public function get_progress()
+    {
+        // Check authorization
+        if (! $this->authorized('global')) {
+            $this->jsonError('Not authorized - admin access required', 403);
+            return;
+        }
+        
+        try {
+            $progress = $this->loadProgress();
+            if ($progress && isset($progress['devices']) && isset($progress['processed'])) {
+                $total = count($progress['devices']);
+                $processed = count($progress['processed']);
+                $remaining = $total - $processed;
+                
+                jsonView([
+                    'success' => true,
+                    'has_progress' => true,
+                    'total' => $total,
+                    'processed' => $processed,
+                    'remaining' => $remaining
+                ]);
+            } else {
+                jsonView([
+                    'success' => true,
+                    'has_progress' => false,
+                    'remaining' => 0
+                ]);
+            }
+        } catch (\Exception $e) {
+            error_log('AppleCare: Failed to get progress: ' . $e->getMessage());
+            jsonView([
+                'success' => true,
+                'has_progress' => false,
+                'remaining' => 0
+            ]);
+        }
+    }
+    
+    /**
+     * Reset sync progress (public endpoint for admin panel)
+     * Clears the cached progress so next sync starts from beginning
+     *
+     * @return void
+     * @author tuxudo
+     **/
+    public function reset_progress()
+    {
+        // Check authorization
+        if (! $this->authorized('global')) {
+            $this->jsonError('Not authorized - admin access required', 403);
+            return;
+        }
+        
+        try {
+            $this->clearProgress();
+            jsonView([
+                'success' => true,
+                'message' => 'Sync progress has been reset. The next sync will start from the beginning.'
+            ]);
+        } catch (\Exception $e) {
+            error_log('AppleCare: Failed to reset progress: ' . $e->getMessage());
+            $this->jsonError('Failed to reset progress: ' . $e->getMessage(), 500);
         }
     }
 
@@ -443,6 +657,9 @@ class Applecare_controller extends Module_controller
         flush();
 
         try {
+            // Clear any existing stop flag when starting a new sync
+            $this->clearStopFlag();
+            
             // Check if we should exclude existing records
             $excludeExisting = isset($_GET['exclude_existing']) && $_GET['exclude_existing'] === '1';
             
@@ -966,6 +1183,14 @@ class Applecare_controller extends Module_controller
         foreach ($devices as $serial) {
             $device_index++;
 
+            // Check if stop has been requested
+            if ($this->isStopRequested()) {
+                $outputCallback("Stop requested by user. Saving progress and stopping...");
+                $this->saveProgress($devices, $processed_serials, $excludeExisting);
+                $this->clearStopFlag();
+                throw new \Exception("Sync stopped by user. Progress saved. You can resume later.");
+            }
+
             // Skip already-processed devices (when resuming)
             if (in_array($serial, $processed_serials)) {
                 continue;
@@ -1302,11 +1527,20 @@ class Applecare_controller extends Module_controller
                 // Get distinct purchase_source_id values and translate them to names
                 // Count distinct devices per reseller (one device counted once even if it has multiple coverage records)
                 // Use Eloquent with selectRaw for MAX aggregation
-                $results = Applecare_model::selectRaw('MAX(applecare.purchase_source_id) AS purchase_source_id')
-                    ->whereNotNull('applecare.purchase_source_id')
-                    ->filter()
-                    ->groupBy('applecare.serial_number')
-                    ->get();
+                // Add error handling for database connection issues
+                try {
+                    $results = Applecare_model::selectRaw('MAX(applecare.purchase_source_id) AS purchase_source_id')
+                        ->whereNotNull('applecare.purchase_source_id')
+                        ->filter()
+                        ->groupBy('applecare.serial_number')
+                        ->get();
+                } catch (\Exception $e) {
+                    // Log error and return empty array
+                    error_log('AppleCare get_binary_widget error for purchase_source_name (query failed): ' . $e->getMessage());
+                    error_log('AppleCare get_binary_widget error trace: ' . $e->getTraceAsString());
+                    jsonView([]);
+                    return;
+                }
 
                 // Aggregate by purchase_source_id
                 $temp_results = [];
