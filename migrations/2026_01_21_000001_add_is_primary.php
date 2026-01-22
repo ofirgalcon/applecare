@@ -41,9 +41,8 @@ class AddIsPrimary extends Migration
         $now = date('Y-m-d');
         $thirtyDays = date('Y-m-d', strtotime('+30 days'));
         
-        // Get all unique serial numbers
-        $serials = Capsule::table('applecare')
-            ->distinct()
+        // Get all unique serial numbers using Eloquent model
+        $serials = Applecare_model::distinct()
             ->pluck('serial_number');
         
         foreach ($serials as $serial) {
@@ -51,9 +50,8 @@ class AddIsPrimary extends Migration
                 continue;
             }
             
-            // Get all plans for this device
-            $plans = Capsule::table('applecare')
-                ->where('serial_number', $serial)
+            // Get all plans for this device using Eloquent model
+            $plans = Applecare_model::where('serial_number', $serial)
                 ->get();
             
             if ($plans->isEmpty()) {
@@ -64,9 +62,8 @@ class AddIsPrimary extends Migration
             $result = $this->findPrimaryPlanAndStatus($plans, $now, $thirtyDays);
             
             if ($result['id']) {
-                // Mark this plan as primary with coverage_status
-                Capsule::table('applecare')
-                    ->where('id', $result['id'])
+                // Mark this plan as primary with coverage_status using Eloquent model
+                Applecare_model::where('id', $result['id'])
                     ->update([
                         'is_primary' => 1,
                         'coverage_status' => $result['coverage_status']
